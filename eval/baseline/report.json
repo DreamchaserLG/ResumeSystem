@@ -1,0 +1,269 @@
+{
+  "manifest": {
+    "dataset": "synthetic-fixtures-v1",
+    "extractor_version": "rules-v1",
+    "dictionary_version": 1,
+    "policy_version": 1,
+    "scope": {
+      "department_ids": [
+        1
+      ],
+      "job_id": 1,
+      "holdout_candidates": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "excluded_cross_department": [
+        "outside"
+      ]
+    },
+    "k": [
+      5,
+      10,
+      20
+    ],
+    "primary_k": 5,
+    "as_of": "2026-11-12",
+    "labels": "人工编写的合成场景预期，未进行真实 HR 双人标注",
+    "evaluation": "PostgreSQL SQL 与关键词基线。越权样本单独检查。"
+  },
+  "by_query_group": {
+    "hard@5": {
+      "precision": 0.30000000000000004,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 2
+    },
+    "hard@10": {
+      "precision": 0.15000000000000002,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 2
+    },
+    "hard@20": {
+      "precision": 0.07500000000000001,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 2
+    },
+    "mixed@5": {
+      "precision": 0.4,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 1
+    },
+    "mixed@10": {
+      "precision": 0.2,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 1
+    },
+    "mixed@20": {
+      "precision": 0.1,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 1
+    },
+    "text@5": {
+      "precision": 0.2,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 2
+    },
+    "text@10": {
+      "precision": 0.1,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 2
+    },
+    "text@20": {
+      "precision": 0.05,
+      "recall": 1.0,
+      "ndcg": 1.0,
+      "query_count": 2
+    }
+  },
+  "input_sha256": {
+    "corpus.jsonl": "25665593f53c48262ecc08abac5d9396cf341b5e8c7ea94c593c1b72e8f3ca6c",
+    "queries.jsonl": "dea98e7c5a307308e956d40395b0438e77ad04d665b8e9b6c1abad8dff8cd3a8",
+    "qrels.jsonl": "5b58687896722e4b79ec55af82a3d7a603554e3af4ae48da99c002fcfcc1cf16",
+    "manifest.json": "7d2b5a377f16be9bc3c22172188680f463994682391fc1bb3dccb79fafa2fec3"
+  },
+  "field_metrics": {
+    "degree": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 3,
+      "fp": 0,
+      "fn": 0
+    },
+    "skill": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 4,
+      "fp": 0,
+      "fn": 0
+    },
+    "company": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 4,
+      "fp": 0,
+      "fn": 0
+    }
+  },
+  "queries": [
+    {
+      "query_id": "degree",
+      "group": "hard",
+      "ranked": [
+        "c",
+        "a"
+      ],
+      "metrics": {
+        "5": {
+          "precision": 0.4,
+          "recall": 1.0,
+          "ndcg": 1.0
+        },
+        "10": {
+          "precision": 0.2,
+          "recall": 1.0,
+          "ndcg": 1.0
+        },
+        "20": {
+          "precision": 0.1,
+          "recall": 1.0,
+          "ndcg": 1.0
+        }
+      },
+      "states": {
+        "c": "match",
+        "a": "match",
+        "b": "reject",
+        "d": "review"
+      },
+      "complete_evidence_hit": null,
+      "false_positive_no_relevant": null,
+      "sql_p95_ms": 13.591
+    },
+    {
+      "query_id": "words",
+      "group": "text",
+      "ranked": [
+        "a",
+        "c"
+      ],
+      "metrics": {
+        "5": {
+          "precision": 0.4,
+          "recall": 1.0,
+          "ndcg": 1.0
+        },
+        "10": {
+          "precision": 0.2,
+          "recall": 1.0,
+          "ndcg": 1.0
+        },
+        "20": {
+          "precision": 0.1,
+          "recall": 1.0,
+          "ndcg": 1.0
+        }
+      },
+      "states": null,
+      "complete_evidence_hit": true,
+      "false_positive_no_relevant": null,
+      "sql_p95_ms": 6.08
+    },
+    {
+      "query_id": "mix",
+      "group": "mixed",
+      "ranked": [
+        "a",
+        "c"
+      ],
+      "metrics": {
+        "5": {
+          "precision": 0.4,
+          "recall": 1.0,
+          "ndcg": 1.0
+        },
+        "10": {
+          "precision": 0.2,
+          "recall": 1.0,
+          "ndcg": 1.0
+        },
+        "20": {
+          "precision": 0.1,
+          "recall": 1.0,
+          "ndcg": 1.0
+        }
+      },
+      "states": null,
+      "complete_evidence_hit": true,
+      "false_positive_no_relevant": null,
+      "sql_p95_ms": 54.355
+    },
+    {
+      "query_id": "no-result",
+      "group": "text",
+      "ranked": [],
+      "metrics": {
+        "5": {
+          "precision": 0.0,
+          "recall": null,
+          "ndcg": null
+        },
+        "10": {
+          "precision": 0.0,
+          "recall": null,
+          "ndcg": null
+        },
+        "20": {
+          "precision": 0.0,
+          "recall": null,
+          "ndcg": null
+        }
+      },
+      "states": null,
+      "complete_evidence_hit": null,
+      "false_positive_no_relevant": false,
+      "sql_p95_ms": 3.845
+    },
+    {
+      "query_id": "review",
+      "group": "hard",
+      "ranked": [
+        "d"
+      ],
+      "metrics": {
+        "5": {
+          "precision": 0.2,
+          "recall": 1.0,
+          "ndcg": 1.0
+        },
+        "10": {
+          "precision": 0.1,
+          "recall": 1.0,
+          "ndcg": 1.0
+        },
+        "20": {
+          "precision": 0.05,
+          "recall": 1.0,
+          "ndcg": 1.0
+        }
+      },
+      "states": null,
+      "complete_evidence_hit": null,
+      "false_positive_no_relevant": null,
+      "sql_p95_ms": 9.674
+    }
+  ],
+  "unauthorized_results": 0
+}

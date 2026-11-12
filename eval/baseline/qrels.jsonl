@@ -1,0 +1,5 @@
+{"query_id":"degree","grades":{"a":2,"b":0,"c":2,"d":0},"states":{"a":"match","b":"reject","c":"match","d":"review"}}
+{"query_id":"words","grades":{"a":2,"b":0,"c":2,"d":0},"evidence_spans":{"a":[11],"c":[7]}}
+{"query_id":"mix","grades":{"a":2,"b":0,"c":2,"d":0},"evidence_spans":{"a":[11],"c":[7]}}
+{"query_id":"no-result","grades":{"a":0,"b":0,"c":0,"d":0}}
+{"query_id":"review","grades":{"a":0,"b":0,"c":0,"d":2}}

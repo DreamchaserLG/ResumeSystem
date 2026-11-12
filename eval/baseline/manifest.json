@@ -1,0 +1,12 @@
+{
+  "dataset": "synthetic-fixtures-v1",
+  "extractor_version": "rules-v1",
+  "dictionary_version": 1,
+  "policy_version": 1,
+  "scope": {"department_ids": [1], "job_id": 1, "holdout_candidates": ["a", "b", "c", "d"], "excluded_cross_department": ["outside"]},
+  "k": [5, 10, 20],
+  "primary_k": 5,
+  "as_of": "2026-11-12",
+  "labels": "人工编写的合成场景预期，未进行真实 HR 双人标注",
+  "evaluation": "PostgreSQL SQL 与关键词基线。越权样本单独检查。"
+}

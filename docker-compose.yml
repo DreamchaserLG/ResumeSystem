@@ -1,0 +1,81 @@
+name: resume_system
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-resume}:${POSTGRES_PASSWORD:-resume}@pg:5432/${POSTGRES_DB:-resume}
+  APP_DATABASE_URL: postgresql://rs_app:${RS_APP_PASSWORD:-rs_app123}@pg:5432/${POSTGRES_DB:-resume}
+  RS_APP_PASSWORD: ${RS_APP_PASSWORD:-rs_app123}
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  STORAGE_ROOT: /data/storage
+  APP_ENV: production
+
+services:
+  pg:
+    image: public.ecr.aws/docker/library/postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-resume}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-resume}
+      POSTGRES_DB: ${POSTGRES_DB:-resume}
+    ports: ["127.0.0.1:${PG_PORT:-5434}:5432"]
+    volumes: ["rs_pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-resume} -d ${POSTGRES_DB:-resume}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: public.ecr.aws/docker/library/redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:${REDIS_PORT:-6380}:6379"]
+    volumes: ["rs_redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: api}
+    environment: *app-env
+    command: ["python", "-m", "migrations.migrate"]
+    depends_on:
+      pg: {condition: service_healthy}
+
+  api:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: api}
+    environment: *app-env
+    ports: ["127.0.0.1:${API_PORT:-8001}:8000"]
+    volumes: ["./storage:/data/storage"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/v1/healthz', timeout=3))['ok']"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: worker}
+    environment:
+      <<: *app-env
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+    volumes: ["./storage:/data/storage", "rs_ocr_models:/home/resume/.paddlex"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
+  frontend:
+    build: {context: frontend}
+    ports: ["127.0.0.1:${FRONTEND_PORT:-5173}:80"]
+    depends_on:
+      api: {condition: service_healthy}
+
+volumes:
+  rs_pgdata:
+  rs_redisdata:
+  rs_ocr_models:

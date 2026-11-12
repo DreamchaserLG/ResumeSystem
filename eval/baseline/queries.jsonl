@@ -1,0 +1,5 @@
+{"id":"degree","group":"hard","input":{"degree":"bachelor","job_id":1,"as_of":"2026-11-12"}}
+{"id":"words","group":"text","input":{"keywords":["高并发","订单"],"section":"work","job_id":1,"as_of":"2026-11-12"}}
+{"id":"mix","group":"mixed","input":{"skill":"Go","min_months":36,"keywords":["高并发","订单"],"section":"work","job_id":1,"as_of":"2026-11-12"}}
+{"id":"no-result","group":"text","input":{"keywords":["卫星通信"],"section":"work","job_id":1,"as_of":"2026-11-12"}}
+{"id":"review","group":"hard","input":{"degree":"bachelor","status":"review","job_id":1,"as_of":"2026-11-12"}}

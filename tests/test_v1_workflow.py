@@ -78,13 +78,22 @@ def test_workflow_with_real_docx(monkeypatch):
         new_version = fixed.json()["version_id"]
         assert version_id != new_version
         assert client.post(base + "/corrections", headers=hr, json=correction).status_code == 409
-        assert client.post(base + "/decisions", headers=hr, json={
-            "version_id":new_version,"decision":"advance","comment":"具备岗位所需经历"
-        }).status_code == 200
+        first_round = info["rounds"][0]["id"]
+        stage = client.put(base + "/stage", headers=hr, json={
+            "code":"interview","round_id":first_round,"workflow_version":info["workflow_version"],
+        })
+        assert stage.status_code == 200, stage.text
+        assert stage.json()["stage"]["label"] == "一面"
         assert client.get(base, headers=hr).json()["status"] == "active"
-        assert client.post(base + "/transfer", headers=hr, json={"department_id":3,"reason":"交由其他部门跟进"}).status_code == 200
+        assert client.post(base + "/transfer", headers=hr, json={
+            "job_id":3,"workflow_version":stage.json()["workflow_version"],"reason":"交由其他部门跟进",
+        }).status_code == 200
         assert client.get(base, headers=hr).status_code == 404
-        assert client.get(base, headers=other).status_code == 200
+        moved = client.get(base, headers=other)
+        assert moved.status_code == 200
+        assert moved.json()["job_id"] == 3 and moved.json()["submitted_job_id"] == 1
+        assert moved.json()["stage"]["label"] == "待审核"
+        assert moved.json()["active_version_id"] == new_version
         deleted = client.post(base + "/purge", headers=other, json={"reason":"验收样本清理"})
         assert deleted.status_code == 200, deleted.text
         assert deleted.json()["cleanup_pending"] == 0

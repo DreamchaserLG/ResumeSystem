@@ -11,6 +11,7 @@ from app.core.auth import AuthContext, require_auth, require_dept_hr
 from app.core.cards import CardQuery, cards
 from app.core.db import owner_engine, rls_session
 from app.core.extraction import masked
+from app.core.recruitment import DEFAULT_ROUNDS, RoundInput, StageCode, expect_revision, rounds_for, save_rounds, stage
 from app.core.resume_pipeline import bump_search, insert
 from app.core.screening import VISIBLE, SearchInput, read_evidence, search
 from app.core.storage import open_file
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/hr", tags=["HR"])
 SAFE_HEADERS = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
 BASE = f"""
     SELECT a.id,a.candidate_id,a.job_id,j.title AS job_title,a.status,a.handling_department_id,
+           a.submitted_job_id,a.recruitment_stage,a.interview_round_id,a.workflow_version,ir.name AS interview_round_name,
            a.active_version_id,a.pending_version_id,a.submitted_at,
            v.status AS parse_status,v.extractor_version,v.fail_reason,
            a.submitted_version_id,
@@ -28,6 +30,7 @@ BASE = f"""
               AND f.policy_version=st.policy_version AND f.purpose='preview' AND f.allowed
               WHERE p.version_id=a.active_version_id LIMIT 1) AS name
     FROM application a JOIN job j ON j.id=a.job_id CROSS JOIN search_state st
+    LEFT JOIN job_interview_round ir ON ir.id=a.interview_round_id
     LEFT JOIN resume_version v ON v.id=coalesce(a.pending_version_id,a.active_version_id,a.submitted_version_id)
     WHERE {VISIBLE} AND st.singleton
 """
@@ -42,10 +45,10 @@ class Correction(BaseModel):
     reason: str = Field(min_length=1, max_length=300)
 
 
-class Decision(BaseModel):
-    version_id: int = Field(gt=0)
-    decision: Literal["advance", "reject", "hold"]
-    comment: str = Field(min_length=1, max_length=1000)
+class StageInput(BaseModel):
+    workflow_version: int = Field(gt=0)
+    code: StageCode
+    round_id: int | None = Field(default=None, gt=0)
 
 
 class Reason(BaseModel):
@@ -53,7 +56,8 @@ class Reason(BaseModel):
 
 
 class Transfer(Reason):
-    department_id: int = Field(gt=0)
+    job_id: int = Field(gt=0)
+    workflow_version: int = Field(gt=0)
 
 
 class JobInput(BaseModel):
@@ -61,6 +65,7 @@ class JobInput(BaseModel):
     jd: str = Field(default="", max_length=4000)
     status: Literal["open", "paused", "closed"] = "open"
     department_id: int = Field(gt=0)
+    rounds: list[RoundInput] | None = Field(default=None, max_length=12)
 
 
 def _note(value):
@@ -123,22 +128,20 @@ def _issues(session, version, policy):
 
 
 @router.get("/applications/{application_id}")
-def detail(application_id: int, auth: AuthContext = Depends(require_dept_hr)):
+def detail(application_id: int, include_evidence: bool = True, auth: AuthContext = Depends(require_dept_hr)):
     with _scope(auth) as s:
         app = _get(s, auth, application_id)
         version = app["active_version_id"]
         policy = s.execute(text("SELECT policy_version FROM search_state")).scalar_one()
-        fields = read_evidence(s, version, policy) if version else []
-        issues = _issues(s, version, policy)
-        reviews = s.execute(text("""
-            SELECT decision,comment,created_at,resume_version_id FROM application_review
-            WHERE application_id=:a ORDER BY id DESC LIMIT 40
-        """), {"a": application_id}).mappings().all()
+        fields = read_evidence(s, version, policy) if version and include_evidence else []
+        issues = _issues(s, version, policy) if include_evidence else []
+        rounds = rounds_for(s, app["job_id"])
+        current = stage(app["recruitment_stage"], app["interview_round_id"], app["interview_round_name"])
         preview = s.execute(text("""
             SELECT preview_key IS NOT NULL FROM resume_version WHERE id=:v
         """), {"v": version}).scalar_one_or_none()
         audit(s, auth.user_id, "view_resume_detail", application_id, {"version_id": version})
-    return {**app, "evidence": fields, "issues": issues, "reviews": [dict(r) for r in reviews], "has_preview": bool(preview)}
+    return {**app, "evidence": fields, "issues": issues, "stage": current, "rounds": rounds, "has_preview": bool(preview)}
 
 
 @router.post("/resume-cards/search")
@@ -262,33 +265,77 @@ def reparse(application_id: int, auth: AuthContext = Depends(require_dept_hr)):
     return {"version_id": version, "status": "parsing"}
 
 
-@router.post("/applications/{application_id}/decisions")
-def decision(application_id: int, body: Decision, auth: AuthContext = Depends(require_dept_hr)):
+@router.put("/applications/{application_id}/stage")
+def change_stage(application_id: int, body: StageInput, auth: AuthContext = Depends(require_dept_hr)):
+    if (body.code == "interview") != (body.round_id is not None):
+        raise HTTPException(422, "面试状态必须选择当前岗位的轮次")
     with owner_engine.begin() as cn:
         row = application_lock(cn, application_id, auth)
-        if row["active_version_id"] != body.version_id:
-            raise HTTPException(409, "简历版本已变化")
-        insert(cn, "application_review", [{"application_id": application_id, "resume_version_id": body.version_id,
-              "author_id": auth.user_id, "decision": body.decision, "comment": _note(body.comment)}])
-        status = {"advance": "active", "reject": "closed", "hold": "on_hold"}[body.decision]
-        cn.execute(text("UPDATE application SET status=:s WHERE id=:a"), {"s": status, "a": application_id})
-        audit(cn, auth.user_id, "recruitment_decision", application_id, {"decision": body.decision, "version_id": body.version_id})
+        expect_revision(row, body.workflow_version)
+        # Serialize with edits to this job's interview plan.
+        cn.execute(text("SELECT id FROM job WHERE id=:j FOR SHARE"), {"j": row["job_id"]})
+        rounds = {item["id"]: item["name"] for item in rounds_for(cn, row["job_id"])}
+        if body.round_id is not None and body.round_id not in rounds:
+            raise HTTPException(422, "面试轮次不属于当前岗位")
+        result = stage(body.code, body.round_id, rounds.get(body.round_id))
+        old = stage(row["recruitment_stage"], row["interview_round_id"], rounds.get(row["interview_round_id"]))
+        if result == old:
+            return {"stage": result, "workflow_version": row["workflow_version"]}
+        version = cn.execute(text("""
+            UPDATE application SET recruitment_stage=:code,interview_round_id=:round
+            WHERE id=:a RETURNING workflow_version
+        """), {"a": application_id, "code": body.code, "round": body.round_id}).scalar_one()
+        audit(cn, auth.user_id, "recruitment_stage_change", application_id,
+              {"job_id": row["job_id"], "from": old, "to": result})
         bump_search(cn)
-    return {"status": status}
+    return {"stage": result, "workflow_version": version}
+
+
+@router.get("/applications/{application_id}/transfer-options")
+def transfer_options(application_id: int, auth: AuthContext = Depends(require_dept_hr)):
+    with _scope(auth) as s:
+        row = _get(s, auth, application_id)
+        items = s.execute(text("""
+            SELECT j.id,j.title,j.department_id,d.name AS department_name
+            FROM job j JOIN department d ON d.id=j.department_id
+            WHERE j.status='open' AND d.status='active' AND j.id<>:j
+            ORDER BY (j.department_id=:d) DESC,d.name,j.title,j.id
+        """), {"j": row["job_id"], "d": row["handling_department_id"]}).mappings().all()
+    return {"items": [dict(item) for item in items]}
 
 
 @router.post("/applications/{application_id}/transfer")
 def transfer(application_id: int, body: Transfer, auth: AuthContext = Depends(require_dept_hr)):
     with owner_engine.begin() as cn:
         row = application_lock(cn, application_id, auth)
-        if not cn.execute(text("SELECT 1 FROM department WHERE id=:d AND status='active'"), {"d": body.department_id}).first():
-            raise HTTPException(422, "目标部门不可用")
-        cn.execute(text("UPDATE application SET handling_department_id=:d WHERE id=:a"), {"d": body.department_id, "a": application_id})
+        expect_revision(row, body.workflow_version)
+        if row["job_id"] == body.job_id:
+            raise HTTPException(422, "请选择其他岗位")
+        target = cn.execute(text("""
+            SELECT j.department_id FROM job j JOIN department d ON d.id=j.department_id
+            WHERE j.id=:j AND j.status='open' AND d.status='active' FOR SHARE OF j,d
+        """), {"j": body.job_id}).scalar_one_or_none()
+        if target is None:
+            raise HTTPException(404, "目标岗位不存在或未开放")
+        cn.execute(text("SELECT id FROM candidate WHERE id=:c FOR UPDATE"), {"c": row["candidate_id"]})
+        if cn.execute(text("""
+            SELECT 1 FROM application WHERE candidate_id=:c AND job_id=:j AND deleted_at IS NULL LIMIT 1
+        """), {"c": row["candidate_id"], "j": body.job_id}).first():
+            raise HTTPException(409, "无法调剂：该候选人在目标岗位已有申请")
+        reason = _note(body.reason)
+        version = cn.execute(text("""
+            UPDATE application SET job_id=:j,handling_department_id=:d,
+                recruitment_stage='review',interview_round_id=NULL
+            WHERE id=:a RETURNING workflow_version
+        """), {"j": body.job_id, "d": target, "a": application_id}).scalar_one()
         cn.execute(text("DELETE FROM resume_original_grant WHERE application_id=:a"), {"a": application_id})
-        audit(cn, auth.user_id, "application_transfer", application_id,
-              {"from": row["handling_department_id"], "to": body.department_id, "reason": _note(body.reason)})
+        audit(cn, auth.user_id, "application_transfer", application_id, {
+            "from_job_id": row["job_id"], "to_job_id": body.job_id, "from_department_id": row["handling_department_id"],
+            "to_department_id": target, "from_stage": row["recruitment_stage"], "from_round_id": row["interview_round_id"],
+            "to_stage": "review", "reason": reason,
+        })
         bump_search(cn)
-    return {"ok": True}
+    return {"job_id": body.job_id, "stage": stage("review"), "workflow_version": version, "remains_visible": target in auth.departments}
 
 
 @router.post("/applications/{application_id}/purge")
@@ -322,20 +369,25 @@ def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Dep
         departments = fresh_departments(cn, auth)
         if body.department_id not in departments:
             raise HTTPException(404, "部门不存在")
-        params = {**body.model_dump(), "id": job_id, "deps": departments, "title": body.title.strip()}
+        params = {**body.model_dump(exclude={"rounds"}), "id": job_id, "deps": departments, "title": body.title.strip()}
         if not params["title"]:
             raise HTTPException(422, "请输入岗位名称")
         if job_id is None:
             job_id = cn.execute(text("""
                 INSERT INTO job(department_id,title,jd,status) VALUES(:department_id,:title,:jd,:status) RETURNING id
             """), params).scalar_one()
+            save_rounds(cn, job_id, body.rounds if body.rounds is not None else [RoundInput(name=name) for name in DEFAULT_ROUNDS])
         else:
-            updated = cn.execute(text("""
-                UPDATE job SET department_id=:department_id,title=:title,jd=:jd,status=:status
-                WHERE id=:id AND department_id=ANY(CAST(:deps AS bigint[])) RETURNING id
+            previous = cn.execute(text("""
+                SELECT department_id FROM job WHERE id=:id AND department_id=ANY(CAST(:deps AS bigint[])) FOR UPDATE
             """), params).scalar_one_or_none()
-            if updated is None:
+            if previous is None:
                 raise HTTPException(404, "岗位不存在")
+            if previous != body.department_id:
+                raise HTTPException(422, "已创建的岗位不能更换部门，请新建岗位后调剂")
+            cn.execute(text("UPDATE job SET title=:title,jd=:jd,status=:status WHERE id=:id"), params)
+            if body.rounds is not None:
+                save_rounds(cn, job_id, body.rounds)
         audit(cn, auth.user_id, "job_write", job_id, target_type="job")
         bump_search(cn)
     return {"id": job_id}

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
-import { label, loadJobs, type Job, type Options, type ResumeCard, type ResumeCardPage, type ResumeTag } from '@/api/hr'
+import { label, loadJobs, stageKey, stagesFor, type Job, type Options, type ResumeCard, type ResumeCardPage, type ResumeTag } from '@/api/hr'
 import ResumeBook from '@/components/ResumeBook.vue'
 
 type Format = 'pdf' | 'word' | 'image'
@@ -14,17 +15,24 @@ const tagNames: Record<string,string> = { legal:'法律', finance:'金融', cons
 const bucketNames: Record<string,string> = { under1:'1 年以内', '1to3':'1–3 年', '3to5':'3–5 年', '5plus':'5 年以上' }
 const schoolNames: Record<string,string> = { is_985:'985', is_211:'211', is_double_first_class:'双一流' }
 const genders: Record<string,string> = { male:'男', female:'女', other:'其他' }
+const route = useRoute(), router = useRouter()
+function routeJob(): number | '' {
+  const id = typeof route.query.job === 'string' ? Number(route.query.job) : 0
+  return Number.isSafeInteger(id) && id > 0 ? id : ''
+}
 const rows = ref<ResumeCard[]>([])
 const jobs = ref<Job[]>([])
 const approvedSchools = ref<Options['school_tags']>([])
-const jobId = ref<number | ''>(''), filterJob = ref<number | ''>('')
+const jobId = ref<number | ''>(routeJob()), filterJob = ref<number | ''>(routeJob())
+const stageFilter = ref('')
+const availableStages = computed(() => stagesFor(jobs.value.find(j => j.id === filterJob.value)?.rounds))
 const format = ref<Format>('pdf')
 const file = ref<File>(), input = ref<HTMLInputElement>()
 const previous = ref<number | ''>('')
 const showImport = ref(false)
 const query = ref(''), currentQuery = ref('')
 const tags = ref<{ id: string; name: string }[]>([])
-const error = ref(''), message = ref('')
+const error = ref(''), message = ref(route.query.transferred ? '已调剂到目标岗位。' : '')
 const busy = ref(false), loading = ref(false)
 const page = ref(1), total = ref(0)
 const mode = ref('auto'), size = ref(6), customSize = ref(6)
@@ -65,7 +73,7 @@ async function load(next = page.value) {
   if (refreshTimer) clearTimeout(refreshTimer)
   try {
     const response = await api.post<ResumeCardPage>('/hr/resume-cards/search', {
-      job_id: filterJob.value || null, query: currentQuery.value, tags: tags.value.map(t => t.id), page: next, size: size.value,
+      job_id: filterJob.value || null, stage_key: stageFilter.value || null, query: currentQuery.value, tags: tags.value.map(t => t.id), page: next, size: size.value,
     })
     if (seq !== request || isUnmounted) return
     total.value = response.total
@@ -100,7 +108,18 @@ function updateSize() {
   adjust()
 }
 function search() { currentQuery.value = query.value.trim(); selected.value = undefined; void load(1); void nextTick().then(() => adjust(0)) }
-function changeJob() { tags.value = tags.value.filter(t => !t.id.startsWith('school:')); search() }
+function changeJob() {
+  stageFilter.value = ''
+  tags.value = tags.value.filter(t => !t.id.startsWith('school:'))
+  void router.replace({ query: filterJob.value ? { job: filterJob.value } : {} })
+  const target = jobs.value.find(j => j.id === filterJob.value)
+  jobId.value = target?.status === 'open' && target.manageable ? target.id : ''
+  search()
+}
+watch(() => route.query.job, () => {
+  const id = routeJob()
+  if (id !== filterJob.value) { filterJob.value = id; changeJob() }
+})
 function tagText(tag: ResumeTag) {
   if (tag.type === 'experience') {
     const months = Number(tag.value)
@@ -119,7 +138,9 @@ function toggleTag(tag: ResumeTag, row: ResumeCard) {
   if (tags.value.length >= 10) { error.value = '最多可同时选择 10 个标签。'; return }
   if (tag.type === 'school' && filterJob.value !== row.job_id) {
     tags.value = tags.value.filter(t => !t.id.startsWith('school:'))
+    if (filterJob.value !== row.job_id) stageFilter.value = ''
     filterJob.value = row.job_id
+    void router.replace({ query: { job: row.job_id } })
   }
   tags.value.push({ id: tag.id, name: tag.type === 'experience' ? '工作 ' + bucketNames[tag.id.split(':')[1]] : tagText(tag) })
   search()
@@ -161,7 +182,7 @@ async function upload() {
     await api.upload('/applications?job_id=' + jobId.value + (previous.value ? '&candidate_application_id=' + previous.value : ''), data)
     message.value = '简历已导入，后台正在解析。'; showImport.value = false
     switchFormat(format.value)
-    filterJob.value = ''; query.value = ''; currentQuery.value = ''; tags.value = []
+    query.value = ''; currentQuery.value = ''; tags.value = []; stageFilter.value = ''
     await load(1)
   } catch (e) { error.value = (e as Error).message }
   finally { busy.value = false }
@@ -177,6 +198,7 @@ onMounted(async () => {
   try {
     const [positions, options] = await Promise.all([loadJobs(), api.get<Options>('/hr/options')])
     jobs.value = positions; approvedSchools.value = options.school_tags
+    if (!positions.some(j => j.id === jobId.value && j.status === 'open' && j.manageable)) jobId.value = ''
   } catch (e) { error.value = (e as Error).message }
 })
 onBeforeUnmount(() => {
@@ -198,7 +220,7 @@ onBeforeUnmount(() => {
     <p v-if="message" class="workspace-notice" role="status">{{ message }}</p>
     <form v-if="showImport" class="import-panel" @submit.prevent="upload">
       <div class="format-tabs" aria-label="导入方式"><button v-for="(item,key) in formats" :key="key" type="button" :class="{ active: format === key }" :aria-pressed="format === key" @click="switchFormat(key)">{{ item.title }}</button></div>
-      <label>招聘岗位<select v-model="jobId" required><option value="">选择岗位</option><option v-for="job in jobs.filter(j => j.status === 'open')" :key="job.id" :value="job.id">{{ job.title }}</option></select></label>
+      <label>招聘岗位<select v-model="jobId" required><option value="">选择岗位</option><option v-for="job in jobs.filter(j => j.status === 'open' && j.manageable)" :key="job.id" :value="job.id">{{ job.title }}</option></select></label>
       <label class="file-label">{{ formats[format].title }} 文件<input ref="input" type="file" :accept="formats[format].accept" required @change="file = ($event.target as HTMLInputElement).files?.[0]"></label>
       <label>关联申请（可选）<input v-model="previous" type="number" min="1" placeholder="已有申请编号"></label>
       <button class="rs-button primary" type="submit" :disabled="busy">{{ busy ? '上传中…' : '确认导入' }}</button>
@@ -207,6 +229,7 @@ onBeforeUnmount(() => {
       <label class="keyword"><span aria-hidden="true">⌕</span><input v-model="query" aria-label="搜索简历" placeholder="搜索姓名、岗位或经历关键词"></label>
       <button class="rs-button primary" type="submit">搜索</button>
       <select v-model="filterJob" aria-label="筛选岗位" @change="changeJob"><option value="">全部岗位</option><option v-for="job in jobs" :key="job.id" :value="job.id">{{ job.title }}</option></select>
+      <select v-model="stageFilter" aria-label="筛选招聘状态" @change="search"><option value="">全部招聘状态</option><option v-for="item in availableStages" :key="stageKey(item)" :value="stageKey(item)">{{ item.label }}</option></select>
     </form>
     <div v-if="tags.length" class="active-filters" aria-label="当前标签条件">
       <span>同时满足</span><button v-for="tag in tags" :key="tag.id" class="active-filter" type="button" :aria-label="'移除 ' + tag.name" @click="removeTag(tag.id)">{{ tag.name }} ×</button>
@@ -227,7 +250,7 @@ onBeforeUnmount(() => {
             <div class="candidate-main">
               <div class="candidate-title">
                 <button type="button" class="candidate-name" @click.stop="openCard(row)">{{ row.name || '申请 #' + row.id }}</button>
-                <span class="candidate-status" :class="{ success: row.parse_status === 'published' }">{{ label(row.parse_status || row.status) }}</span>
+                <span class="candidate-status" :class="{ success: row.stage.code === 'hired', rejected: row.stage.code === 'rejected' }">{{ row.stage.label }}</span>
               </div>
               <dl class="candidate-facts">
                 <div><dt>求职岗位</dt><dd :title="row.target_role || row.job_title">{{ row.target_role || row.job_title }}</dd></div>
@@ -244,7 +267,10 @@ onBeforeUnmount(() => {
                 <span v-if="!row.tags.length" class="no-tags">暂无已核实标签</span>
               </div>
             </div>
-            <RouterLink class="details-link" :to="'/applications/' + row.id" :aria-label="'申请详情：' + (row.name || row.id)" @click.stop>详情 ›</RouterLink>
+            <div class="card-links">
+              <RouterLink class="details-link" :to="'/applications/' + row.id" :aria-label="'申请详情：' + (row.name || row.id)" @click.stop>详情 ›</RouterLink>
+              <RouterLink class="details-link" :to="'/applications/' + row.id + '#transfer'" :aria-label="'调剂：' + (row.name || row.id)" @click.stop>调剂</RouterLink>
+            </div>
           </article>
         </div>
       </div>
@@ -306,6 +332,7 @@ onBeforeUnmount(() => {
 .candidate-title { display:flex; align-items:center; gap:9px; }
 .candidate-name { color:#172b4d; background:none; border:0; padding:0; font-size:17px; font-weight:800; cursor:pointer; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; max-width:100%; }
 .candidate-status { color:#495d78; font-size:10px; background:#eef2f7; border-radius:5px; padding:2px 6px; flex:none; }
+.candidate-status.rejected { color:#a23d42; background:#f9e8e9; }
 .candidate-status.success { color:#20715c; background:#e6f6ef; }
 .candidate-facts { display:grid; grid-template-columns:minmax(105px,1.25fr) minmax(43px,.55fr) minmax(100px,.85fr) minmax(95px,1.2fr); gap:7px; margin:6px 0; font-size:12px; }
 .candidate-facts div { min-width:0; display:flex; gap:6px; }
@@ -321,6 +348,7 @@ button.candidate-tag:hover,button.candidate-tag.is-selected { border-color:#7893
 .candidate-tag.domain { color:#226959; background:#e7f6ef; }
 .candidate-tag.experience { color:#6c489c; background:#f2ebfa; }
 .no-tags { color:#62718a; font-size:11px; }
+.card-links { display:grid; gap:7px; justify-items:end; }
 .details-link { font-size:12px; color:#3858a1; white-space:nowrap; }
 .split .candidate-row { grid-template-columns:43px minmax(0,1fr) auto; padding:9px 12px; gap:9px; }
 .split .candidate-avatar { width:42px; height:42px; border-radius:11px; }
@@ -338,9 +366,10 @@ button.candidate-tag:hover,button.candidate-tag.is-selected { border-color:#7893
 .portrait-placeholder { display:grid; place-items:center; background:linear-gradient(135deg,#dce8ff,#bcd1ef); color:#36568e; font-weight:800; font-size:clamp(70px,22vmin,200px); }
 .portrait-close { position:absolute; top:17px; right:17px; width:42px; height:42px; background:#fff; color:#15263e; border:0; border-radius:50%; font-size:25px; cursor:pointer; }
 .portrait-dialog p { margin:7px 0 0; font-weight:700; }
-@media(max-width:1140px) { .split .workspace-body { grid-template-columns:minmax(250px,.8fr) minmax(0,1.2fr); } .split .details-link { display:none; } .split .candidate-row { grid-template-columns:43px minmax(0,1fr); } }
+@media(max-width:1140px) { .split .workspace-body { grid-template-columns:minmax(250px,.8fr) minmax(0,1.2fr); } .split .card-links { display:none; } .split .candidate-row { grid-template-columns:43px minmax(0,1fr); } }
 @media(max-width:820px) {
   .workspace-heading p,.workspace-kicker { display:none; }
+  .filter-bar { flex-wrap:wrap; }
   .workspace-heading h1 { font-size:23px; }
   .candidate-facts { grid-template-columns:1fr 1fr; gap:3px 6px; }
   .card-viewport { --row-height:124px; }

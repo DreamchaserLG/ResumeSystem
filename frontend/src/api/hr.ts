@@ -1,7 +1,18 @@
 import { api } from './client'
 
 export interface Department { id: number; name: string }
-export interface Job { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null }
+export interface InterviewRound { id: number; name: string; position: number }
+export type StageCode = 'review' | 'interview' | 'rejected' | 'hired'
+export interface Stage { code: StageCode; label: string; round_id: number | null }
+export interface Job { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[] }
+export type TransferJob = Pick<Job, 'id' | 'title' | 'department_id' | 'department_name'>
+export const stagesFor = (rounds: InterviewRound[] = []): Stage[] => [
+  { code: 'review', label: '待审核', round_id: null },
+  ...rounds.map(r => ({ code: 'interview' as const, label: r.name, round_id: r.id })),
+  { code: 'hired', label: '录取', round_id: null },
+  { code: 'rejected', label: '淘汰', round_id: null },
+]
+export const stageKey = (stage: Stage) => stage.round_id ? 'interview:' + stage.round_id : stage.code
 export interface Application {
   id: number; job_id: number; job_title: string; name: string | null; status: string
   handling_department_id: number; active_version_id: number | null; pending_version_id: number | null
@@ -18,7 +29,7 @@ export interface Issue {
 }
 export interface Detail extends Application {
   evidence: Evidence[]; issues: Issue[]; has_preview: boolean
-  reviews: { decision: string; comment: string; created_at: string; resume_version_id: number }[]
+  stage: Stage; rounds: InterviewRound[]; workflow_version: number
 }
 export interface Options { departments: Department[]; hr_department_ids: number[]; skills: string[]; school_tags: { job_id: number; tag_code: string }[] }
 export interface Page<T> { items: T[]; has_more: boolean }
@@ -51,6 +62,6 @@ export interface ResumeTag {
 export interface ResumeCard {
   id: number; version_id: number | null; job_id: number; job_title: string; name: string | null
   target_role: string | null; gender: string | null; city: string | null; address: string | null; phone: string | null
-  status: string; parse_status: string; page_count: number; has_avatar: boolean; tags: ResumeTag[]
+  status: string; stage: Stage; parse_status: string; page_count: number; has_avatar: boolean; tags: ResumeTag[]
 }
 export interface ResumeCardPage { items: ResumeCard[]; total: number; page: number; size: number }

@@ -1,7 +1,4 @@
-"""岗位接口：M2 权限链路的业务验证点。
-
-部门 HR 只见本部门岗位（应用层显式条件 + RLS 兜底）；超管只见元数据，无简历正文（02 §1）。
-"""
+"""List jobs, their interview plans, and the count of linked applications."""
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 
@@ -13,24 +10,27 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 @router.get("")
 def list_jobs(auth: AuthContext = Depends(require_auth)):
-    if auth.role == "super_admin":
-        # 超管：全公司岗位元数据（管理视图），不含候选人资料
-        with rls_session(user_id=auth.user_id) as s:
-            rows = s.execute(
-                text(
-                    "SELECT j.id, j.title, j.jd, j.status, j.department_id, d.name AS department_name"
-                    " FROM job j JOIN department d ON d.id = j.department_id ORDER BY j.id"
-                )
-            ).mappings().all()
+    admin = auth.role == "super_admin"
+    if admin:
+        counts = "SELECT job_id,application_count FROM admin_job_application_counts()"
+        scope = ""
     else:
-        # 部门 HR：应用层显式注入授权部门集合（02 §2.1），RLS 二次兜底
-        with rls_session(departments=auth.departments, user_id=auth.user_id) as s:
-            rows = s.execute(
-                text(
-                    "SELECT j.id, j.title, j.jd, j.status, j.department_id, d.name AS department_name"
-                    " FROM job j JOIN department d ON d.id = j.department_id"
-                    " WHERE j.department_id = ANY(:deps) ORDER BY j.id"
-                ),
-                {"deps": auth.departments},
-            ).mappings().all()
-    return {"items": [dict(r) for r in rows], "scope": auth.role}
+        counts = """
+            SELECT job_id,count(*) AS application_count FROM application
+            WHERE deleted_at IS NULL AND handling_department_id=ANY(CAST(:deps AS bigint[])) GROUP BY job_id
+        """
+        scope = """WHERE j.department_id=ANY(CAST(:deps AS bigint[])) OR c.application_count>0"""
+    with rls_session(departments=None if admin else auth.departments, user_id=auth.user_id) as s:
+        rows = s.execute(text(f"""
+            WITH counts AS ({counts})
+            SELECT j.id,j.title,j.jd,j.status,j.department_id,d.name AS department_name,
+                   coalesce(c.application_count,0) AS application_count,
+                   j.department_id=ANY(CAST(:deps AS bigint[])) AS manageable,
+                   coalesce((SELECT jsonb_agg(jsonb_build_object('id',r.id,'name',r.name,'position',r.position)
+                                              ORDER BY r.position)
+                             FROM job_interview_round r WHERE r.job_id=j.id),'[]'::jsonb) AS rounds
+            FROM job j JOIN department d ON d.id=j.department_id
+            LEFT JOIN counts c ON c.job_id=j.id
+            {scope} ORDER BY d.name,j.id
+        """), {"deps": auth.departments}).mappings().all()
+    return {"items": [dict(row) for row in rows], "scope": auth.role}

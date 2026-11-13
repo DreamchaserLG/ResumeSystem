@@ -109,6 +109,10 @@ async def import_resume(
             if cand is None:
                 raise HTTPException(404, "关联申请不存在")
             cn.execute(text("SELECT id FROM candidate WHERE id=:c FOR UPDATE"), {"c": cand})
+            if cn.execute(text("""
+                SELECT 1 FROM application WHERE candidate_id=:c AND job_id=:j AND deleted_at IS NULL LIMIT 1
+            """), {"c": cand, "j": job_id}).first():
+                raise HTTPException(409, "该候选人在此岗位已有申请")
         sha = hashlib.sha256(data).hexdigest()
         doc_id = cn.execute(text("""
             SELECT id FROM resume_document WHERE candidate_id=:c AND sha256=:hash FOR UPDATE

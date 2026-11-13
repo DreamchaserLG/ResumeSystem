@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
 from app.core.extraction import norm
+from app.core.recruitment import stage
 from app.core.screening import SearchInput, VISIBLE, _like, _months, _terms, _trusted
 
 # Each domain tag requires a term in the approved text of a work or project record.
@@ -23,6 +24,7 @@ DOMAINS = {
 class CardQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: int | None = Field(default=None, gt=0)
+    stage_key: str | None = Field(default=None, pattern=r"^(review|rejected|hired|interview:[1-9][0-9]{0,17})$")
     query: str = Field(default="", max_length=200)
     tags: list[str] = Field(default_factory=list, max_length=10)
     page: int = Field(default=1, ge=1, le=10000)
@@ -110,12 +112,21 @@ def cards(session, auth, request):
              CASE WHEN q.work_months IS NULL THEN ARRAY[]::text[] ELSE ARRAY['experience:'||
                CASE WHEN q.work_months<12 THEN 'under1' WHEN q.work_months<36 THEN '1to3'
                     WHEN q.work_months<60 THEN '3to5' ELSE '5plus' END] END)""")
+    stage_filter = ""
+    if request.stage_key:
+        code, _, round_id = request.stage_key.partition(":")
+        params["stage"] = code
+        stage_filter = " AND a.recruitment_stage=:stage"
+        if round_id:
+            params["round_id"] = int(round_id)
+            stage_filter += " AND a.interview_round_id=:round_id"
     scoped = f"""
         SELECT a.id,a.active_version_id AS version_id,a.job_id,j.title AS job_title,a.status,a.submitted_at,
-               a.pending_version_id,v.status AS parse_status
+               a.pending_version_id,v.status AS parse_status,a.recruitment_stage,a.interview_round_id,ir.name AS interview_round_name
         FROM application a JOIN job j ON j.id=a.job_id
+        LEFT JOIN job_interview_round ir ON ir.id=a.interview_round_id
         LEFT JOIN resume_version v ON v.id=coalesce(a.pending_version_id,a.active_version_id,a.submitted_version_id)
-        WHERE {VISIBLE} AND (CAST(:job AS bigint) IS NULL OR a.job_id=:job)
+        WHERE {VISIBLE} AND (CAST(:job AS bigint) IS NULL OR a.job_id=:job) {stage_filter}
     """
     sql = "WITH scoped AS (" + scoped + ")"
     source = "scoped"
@@ -133,7 +144,8 @@ def cards(session, auth, request):
             SELECT a.*,p.name,p.target_role,{projection}
             FROM scoped a LEFT JOIN resume_profile p ON p.version_id=a.version_id
         ), matched AS (
-            SELECT q.id,q.version_id,q.job_id,q.job_title,q.status,q.submitted_at,q.pending_version_id,q.parse_status
+            SELECT q.id,q.version_id,q.job_id,q.job_title,q.status,q.submitted_at,q.pending_version_id,q.parse_status,
+                   q.recruitment_stage,q.interview_round_id,q.interview_round_name
             FROM conditions q WHERE {" AND ".join(where)}
         )"""
         source = "matched"
@@ -147,6 +159,7 @@ def cards(session, auth, request):
     for row in rows:
         item = dict(row)
         item.pop("total", None)
+        item["stage"] = stage(item.pop("recruitment_stage"), item.pop("interview_round_id"), item.pop("interview_round_name"))
         item["page_count"] = item["page_count"] or int(item["legacy_preview"])
         item["tags"] = []
         for category, column in (("degree","degrees"),("school","schools"),("domain","domains"),("skill","skills")):

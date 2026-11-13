@@ -110,7 +110,7 @@ function onUserAction(key: string) {
         </transition>
       </div>
       <NMenu
-        :value="route.name as string"
+        :value="route.name === 'application-detail' ? 'applications' : route.name as string"
         :options="menus"
         :collapsed="collapsed"
         :theme-overrides="menuTheme"

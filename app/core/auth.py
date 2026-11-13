@@ -64,16 +64,16 @@ def delete_session(token: str) -> None:
     get_redis().delete(_session_key(token))
 
 
-def _fresh_perm_version(user_id: int) -> int | None:
+def _fresh_account(user_id: int) -> tuple[int, str] | None:
     s = SessionLocal()
     try:
         row = s.execute(
-            text("SELECT perm_version, status FROM app_user WHERE id = :i"),
+            text("SELECT perm_version, status, display_name FROM app_user WHERE id = :i"),
             {"i": user_id},
         ).fetchone()
         if row is None or row[1] != "active":
             return None
-        return int(row[0])
+        return int(row[0]), row[2]
     finally:
         s.close()
 
@@ -92,10 +92,11 @@ def require_auth(request: Request) -> AuthContext:
     if sess is None:
         raise HTTPException(status_code=401, detail="会话已过期，请重新登录")
 
-    fresh = _fresh_perm_version(sess["user_id"])
-    if fresh is None:
+    account = _fresh_account(sess["user_id"])
+    if account is None:
         delete_session(token)
         raise HTTPException(status_code=401, detail="账号不可用")
+    fresh, display_name = account
     if fresh != sess.get("perm_version"):
         # 权限版本变化：作废旧会话，强制重新登录（撤权立即生效）
         delete_session(token)
@@ -104,7 +105,7 @@ def require_auth(request: Request) -> AuthContext:
     return AuthContext(
         user_id=sess["user_id"],
         email=sess["email"],
-        display_name=sess["display_name"],
+        display_name=display_name,
         role=sess["role"],
         perm_version=fresh,
         departments=[int(d) for d in sess.get("departments", [])],

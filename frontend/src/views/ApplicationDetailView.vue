@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useMessage } from 'naive-ui'
 import { api } from '@/api/client'
-import { label, locationText, stageKey, stagesFor, type Detail, type Issue, type TransferJob } from '@/api/hr'
+import { label, locationText, schoolTagLabels, stageDisplay, stageKey, stagesFor, type Detail, type Issue, type TransferJob } from '@/api/hr'
 
 const route = useRoute(), router = useRouter()
+const toast = useMessage()
 const detail = ref<Detail>()
 const transferJobs = ref<TransferJob[]>([])
 const transferLoaded = ref(false)
@@ -17,6 +19,11 @@ const message = ref('')
 const busy = ref(false)
 const preview = ref('')
 const picked = ref<Issue>()
+const editableEvidence = new Set([
+  'profile.name','profile.city','profile.target_role','education.school_raw','education.degree_level','education.major',
+  'education.period','work.company','work.title','work.employment_type','work.period','work.description',
+  'project.project_name','project.role','project.period','project.description','skill.name',
+])
 const action = ref('correct')
 const value = ref('')
 const reason = ref('')
@@ -29,17 +36,27 @@ const transferReason = ref('')
 const purgeReason = ref('')
 const id = String(route.params.id)
 const base = '/hr/applications/' + id
+let parseTimer: ReturnType<typeof setTimeout> | undefined
+let mounted = true
+function waitForParse() {
+  if (parseTimer) clearTimeout(parseTimer)
+  if (mounted && detail.value?.parse_status === 'parsing') parseTimer = setTimeout(load, 2200)
+}
 async function load() {
   try {
-    detail.value = await api.get<Detail>(base + (fullLoaded.value ? '' : '?include_evidence=false'))
+    const updated = await api.get<Detail>(base + (fullLoaded.value ? '' : '?include_evidence=false'))
+    if (!mounted) return
+    if (detail.value?.active_version_id !== updated.active_version_id && preview.value) hidePreview()
+    detail.value = updated
     nextStage.value = stageKey(detail.value.stage)
+    waitForParse()
   } catch (e) { error.value = (e as Error).message }
 }
 async function loadEvidence() {
   if (fullLoaded.value) return
   try {
     const full = await api.get<Detail>(base)
-    if (detail.value) detail.value = { ...detail.value, evidence: full.evidence, issues: full.issues }
+    if (detail.value) detail.value = { ...detail.value, evidence: full.evidence, issues: full.issues, reviewed_extensions:full.reviewed_extensions }
     fullLoaded.value = true
   } catch (e) { error.value = (e as Error).message }
 }
@@ -62,7 +79,7 @@ onMounted(async () => {
     document.getElementById(route.hash.slice(1))?.scrollIntoView()
   }
 })
-onUnmounted(() => { if (preview.value) URL.revokeObjectURL(preview.value) })
+onUnmounted(() => { mounted = false; if (parseTimer) clearTimeout(parseTimer); if (preview.value) URL.revokeObjectURL(preview.value) })
 async function operation(task: () => Promise<unknown>, success: string, reload = true) {
   busy.value = true; error.value = ''; message.value = ''
   try { await task(); message.value = success; if (reload) await load() }
@@ -79,7 +96,8 @@ async function updateStage() {
     })
     if (detail.value) detail.value = { ...detail.value, ...updated }
     nextStage.value = stageKey(updated.stage)
-  }, '状态已更新。', false)
+    toast.success('招聘状态已更新。')
+  }, '', false)
 }
 async function moveApplication() {
   const current = detail.value
@@ -96,12 +114,17 @@ async function moveApplication() {
     await load()
   }, '已调剂，状态回到待审核。', false)
 }
-function select(issue: Issue) { picked.value = issue; value.value = ''; reason.value = ''; action.value = issue.field_key === 'extension' ? 'dismiss' : 'correct' }
+function select(issue: Issue) {
+  picked.value = issue
+  value.value = issue.evidence || ''
+  reason.value = ''
+  action.value = 'correct'
+}
 async function save() {
   const issue = picked.value
   if (!issue || !detail.value?.active_version_id) return
   await operation(async () => {
-    await api.post(base + '/corrections', { version_id: detail.value?.active_version_id, record_no: issue.record_no, field_key: issue.field_key, action: action.value, value: value.value, reason: reason.value })
+    await api.post(base + '/corrections', { version_id: detail.value?.active_version_id, record_no: issue.record_no, field_key: issue.field_key, source_span_no:issue.span_no, action: action.value, value: value.value, reason: reason.value })
     picked.value = undefined
   }, '复核结果已发布。')
 }
@@ -131,11 +154,22 @@ async function showPreview() {
     <p v-if="error" class="rs-error" role="alert">{{ error }}</p><p v-if="message" class="rs-message" role="status">{{ message }}</p>
     <template v-if="detail">
       <section class="rs-card rs-panel stage-panel" aria-label="当前招聘状态">
-        <div><p class="stage-caption">当前招聘状态</p><h2 class="rs-badge stage-display" :class="detail.stage.code">{{ detail.stage.label }}</h2></div>
+        <div><p class="stage-caption">当前招聘状态</p><h2 class="rs-badge stage-display" :class="detail.stage.code">{{ stageDisplay(detail.stage) }}</h2></div>
         <form class="rs-form" @submit.prevent="updateStage">
-          <label>更新状态<select v-model="nextStage"><option v-for="item in available" :key="stageKey(item)" :value="stageKey(item)">{{ item.label }}</option></select></label>
+          <label>更新状态<select v-model="nextStage"><option v-for="item in available" :key="stageKey(item)" :value="stageKey(item)">{{ stageDisplay(item) }}</option></select></label>
           <button class="rs-button primary" :disabled="busy || nextStage === activeKey">保存</button>
         </form>
+      </section>
+      <section v-if="detail.education.length" class="rs-card rs-panel education-summary" aria-label="已核实教育经历">
+        <h2>教育经历</h2>
+        <ul>
+          <li v-for="entry in detail.education" :key="entry.record_no">
+            <strong>{{ entry.school }}</strong>
+            <span v-if="entry.degree">{{ label(entry.degree) }}</span>
+            <span v-for="tag in entry.tags" :key="tag" class="rs-badge">{{ schoolTagLabels[tag] }}</span>
+            <span v-if="entry.qs_rank" class="rs-badge" :title="'QS ' + entry.qs_edition + ' 世界大学排名'">QS #{{ entry.qs_rank }}</span>
+          </li>
+        </ul>
       </section>
       <section class="rs-card rs-panel">
         <div class="detail-tools">
@@ -161,18 +195,39 @@ async function showPreview() {
             <td>{{ issue.evidence || '暂无可展示的原文' }} <small v-if="issue.locator">· {{ locationText(issue.locator) }}</small></td>
             <td><button class="rs-button" @click="select(issue)">复核</button></td></tr>
         </tbody></table>
-        <form v-if="picked" class="rs-form" @submit.prevent="save">
-          <label>处理 {{ picked.label }}<select v-model="action"><option v-if="picked.field_key !== 'extension'" value="correct">更正字段</option><option value="dismiss">{{ picked.field_key === 'extension' ? '保留原值' : '证据不足，关闭待办' }}</option></select></label>
-          <label v-if="action === 'correct'" class="grow">核实后的值<input v-model="value" required></label><label class="grow">处理说明<input v-model="reason" required></label>
-          <button class="rs-button primary" :disabled="busy">提交复核</button>
-        </form>
+        <details v-if="detail.reviewed_extensions?.length">
+          <summary>已复核的扩展字段（{{ detail.reviewed_extensions.length }}）</summary>
+          <table class="rs-table"><thead><tr><th>字段</th><th>核实值</th><th>操作</th></tr></thead><tbody>
+            <tr v-for="field in detail.reviewed_extensions" :key="field.record_no">
+              <td>{{ field.raw_label }}</td><td>{{ field.value }}</td>
+              <td><button type="button" class="rs-button" @click="select({
+                record_no:field.record_no, field_key:'extension', label:field.raw_label, reason:'',
+                evidence:field.value, span_no:null, locator:null, ocr_confidence:null,
+              })">更正</button></td>
+            </tr>
+          </tbody></table>
+        </details>
       </section>
       <section v-if="evidenceOpen" class="rs-card rs-panel">
         <h2>字段与原文证据</h2>
         <p v-if="!detail.evidence.length" class="rs-muted">{{ fullLoaded ? '当前版本暂无可查看的字段证据。' : '正在加载。' }}</p>
         <div class="rs-evidence"><article v-for="entry in detail.evidence" :id="'span-' + entry.span_no" :key="entry.record_no + ':' + entry.field_key + ':' + entry.span_no">
-          <strong>{{ label(entry.field_key) }}</strong> · {{ locationText(entry.locator) }}<p>{{ entry.text }}</p>
+          <strong>{{ label(entry.field_key) }}</strong> · {{ locationText(entry.locator) }}
+          <span v-if="entry.extraction_method === 'manual'"> · 已人工核对</span>
+          <p>{{ entry.text }}</p>
+          <button v-if="editableEvidence.has(entry.field_key)" type="button" class="rs-button" @click="select({
+            record_no:entry.record_no,field_key:entry.field_key,span_no:entry.span_no,label:label(entry.field_key),
+            reason:'',evidence:entry.text,locator:entry.locator,ocr_confidence:entry.ocr_confidence,
+          })">更正</button>
         </article></div>
+      </section>
+      <section v-if="picked" class="rs-card rs-panel" aria-label="更正字段">
+        <form v-if="picked" class="rs-form" @submit.prevent="save">
+          <label>处理 {{ picked.label }}<select v-model="action"><option value="correct">更正字段</option><option value="dismiss">{{ picked.field_key === 'extension' ? '保留原值' : '证据不足，关闭待办' }}</option></select></label>
+          <label v-if="action === 'correct'" class="grow">核实后的值<textarea v-model="value" rows="2" maxlength="2000" required></textarea></label><label class="grow">处理说明<input v-model="reason" required></label>
+          <button class="rs-button primary" :disabled="busy">提交复核</button>
+          <button class="rs-button" type="button" @click="picked = undefined">取消</button>
+        </form>
       </section>
       <details class="rs-card rs-panel">
         <summary>更多操作</summary>
@@ -180,7 +235,8 @@ async function showPreview() {
           <button class="rs-button" :disabled="busy || detail.parse_status === 'parsing'" @click="operation(() => api.post(base + '/reparse'), '已提交重新解析。')">重新解析</button>
           <button class="rs-button" @click="operation(() => api.download(base + '/original'), '原件已下载。', false)">下载已授权原件</button>
         </div>
-        <p v-if="detail.fail_reason" class="rs-error">{{ detail.fail_reason }}</p>
+        <p v-if="detail.parse_status === 'parsing'" class="rs-muted" role="status">正在解析，完成后会自动刷新。</p>
+        <p v-if="detail.fail_reason" class="rs-error" role="alert">{{ detail.fail_reason }}</p>
         <form class="rs-form detail-form" @submit.prevent="purge">
           <label class="grow">清理理由<input v-model="purgeReason" required></label><button class="rs-button danger" :disabled="busy">永久清理</button>
         </form>
@@ -191,9 +247,13 @@ async function showPreview() {
 
 <style scoped>
 .application-detail { align-content:start; }
+.education-summary h2 { margin:0 0 9px; font-size:16px; }
+.education-summary ul { display:grid; gap:8px; padding:0; margin:0; list-style:none; }
+.education-summary li { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:13px; }
 .stage-panel { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
 .stage-caption { color:var(--rs-text-secondary); font-size:13px; margin:0 0 6px; }
 .stage-panel .stage-display { display:inline-block; margin:0; padding:4px 10px; white-space:normal; overflow-wrap:anywhere; }
+.stage-display.progress,.stage-display.interview { color:#3758a3; background:#edf2ff; }
 .stage-display.hired { color:#20715c; background:#e6f6ef; }
 .stage-display.rejected { color:#a23d42; background:#f9e8e9; }
 .stage-panel select,.detail-form select { max-width: min(100%, 420px); }

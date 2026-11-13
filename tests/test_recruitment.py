@@ -46,7 +46,9 @@ def test_job_rounds_and_same_department_transfer(monkeypatch):
 
         detail = client.get(base+"?include_evidence=false", headers=hr).json()
         assert detail["stage"]["label"] == "待审核" and detail["evidence"] == []
-        start = {"code":"interview","round_id":source_rounds[0]["id"],"workflow_version":detail["workflow_version"]}
+        progress = client.put(base+"/stage", headers=hr, json={"code":"progress","workflow_version":detail["workflow_version"]})
+        assert progress.status_code == 200 and progress.json()["stage"]["label"] == "推进中"
+        start = {"code":"interview","round_id":source_rounds[0]["id"],"workflow_version":progress.json()["workflow_version"]}
         assert client.put(base+"/stage",headers=hr,json={**start,"round_id":target_round}).status_code == 422
         change = client.put(base+"/stage",headers=hr,json=start)
         assert change.status_code == 200, change.text
@@ -63,8 +65,16 @@ def test_job_rounds_and_same_department_transfer(monkeypatch):
         update = client.put(f"/api/v1/hr/jobs/{source}",headers=hr,json={**settings,"rounds":[
             {"id":source_rounds[1]["id"],"name":"终面"},{"id":source_rounds[0]["id"],"name":"专业面"},
         ]})
+        assert update.status_code == 422
+        update = client.put(f"/api/v1/hr/jobs/{source}",headers=hr,json={**settings,"rounds":[
+            {"id":source_rounds[0]["id"],"name":"专业面"},{"name":"复试"},{"id":source_rounds[1]["id"],"name":"终面"},
+        ]})
         assert update.status_code == 200, update.text
-        assert [r["name"] for r in jobs(hr)[source]["rounds"]] == ["终面","专业面"]
+        assert [r["name"] for r in jobs(hr)[source]["rounds"]] == ["专业面","复试","终面"]
+        assert client.post("/api/v1/hr/resume-cards/search",headers=hr,json={
+            "job_id":source,"stage_key":"progress",
+        }).json()["total"] == 1
+        assert client.put(base+"/stage", headers=outside, json={"code":"hired","workflow_version":expected}).status_code == 404
         assert client.get(base,headers=hr).json()["stage"]["label"] == "专业面"
         hired = client.put(base+"/stage",headers=hr,json={"code":"hired","workflow_version":expected})
         assert hired.status_code == 200 and hired.json()["stage"]["label"] == "录取"

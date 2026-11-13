@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import admin, auth, jobs, system, uploads
-from app.api import hr, integrations
+from app.api import hr, integrations, profile, statistics
 from app.core.config import get_settings
 
 logging.basicConfig(
@@ -51,3 +51,7 @@ app.include_router(uploads.router, prefix="/api/v1")
 app.include_router(integrations.router, prefix="/api/v1")
 
 app.include_router(hr.router, prefix="/api/v1")
+
+app.include_router(profile.router, prefix="/api/v1")
+
+app.include_router(statistics.router, prefix="/api/v1")

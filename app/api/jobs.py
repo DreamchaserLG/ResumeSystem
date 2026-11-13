@@ -23,7 +23,7 @@ def list_jobs(auth: AuthContext = Depends(require_auth)):
     with rls_session(departments=None if admin else auth.departments, user_id=auth.user_id) as s:
         rows = s.execute(text(f"""
             WITH counts AS ({counts})
-            SELECT j.id,j.title,j.jd,j.status,j.department_id,d.name AS department_name,
+            SELECT j.id,j.title,j.jd,j.status,j.department_id,d.name AS department_name,j.planned_headcount,j.target_date,
                    coalesce(c.application_count,0) AS application_count,
                    j.department_id=ANY(CAST(:deps AS bigint[])) AS manageable,
                    coalesce((SELECT jsonb_agg(jsonb_build_object('id',r.id,'name',r.name,'position',r.position)

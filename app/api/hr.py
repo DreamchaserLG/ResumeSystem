@@ -1,5 +1,5 @@
 """Department HR workflow for scoped applications and evidence."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.core.auth import AuthContext, require_auth, require_dept_hr
-from app.core.cards import CardQuery, cards
+from app.core.cards import CardQuery, cards, education_summary
 from app.core.db import owner_engine, rls_session
 from app.core.extraction import masked
 from app.core.recruitment import DEFAULT_ROUNDS, RoundInput, StageCode, expect_revision, rounds_for, save_rounds, stage
@@ -43,6 +43,7 @@ class Correction(BaseModel):
     action: Literal["correct", "dismiss"]
     value: str | None = Field(default=None, max_length=2000)
     reason: str = Field(min_length=1, max_length=300)
+    source_span_no: int | None = Field(default=None, gt=0)
 
 
 class StageInput(BaseModel):
@@ -66,6 +67,8 @@ class JobInput(BaseModel):
     status: Literal["open", "paused", "closed"] = "open"
     department_id: int = Field(gt=0)
     rounds: list[RoundInput] | None = Field(default=None, max_length=12)
+    planned_headcount: int | None = Field(default=None, ge=1, le=100000)
+    target_date: date | None = None
 
 
 def _note(value):
@@ -135,13 +138,20 @@ def detail(application_id: int, include_evidence: bool = True, auth: AuthContext
         policy = s.execute(text("SELECT policy_version FROM search_state")).scalar_one()
         fields = read_evidence(s, version, policy) if version and include_evidence else []
         issues = _issues(s, version, policy) if include_evidence else []
+        reviewed_extensions = [dict(row) for row in s.execute(text("""
+            SELECT x.record_no,x.raw_label,coalesce(x.payload->>'corrected',x.payload->>'raw') AS value
+            FROM resume_extra_value x JOIN resume_source_span s USING(version_id,span_no)
+            WHERE x.version_id=:v AND x.reviewed AND x.field_key IS NULL AND NOT s.is_sensitive
+            ORDER BY x.record_no
+        """), {"v":version}).mappings()] if version and include_evidence else []
+        education = education_summary(s, version, policy)
         rounds = rounds_for(s, app["job_id"])
         current = stage(app["recruitment_stage"], app["interview_round_id"], app["interview_round_name"])
         preview = s.execute(text("""
             SELECT preview_key IS NOT NULL FROM resume_version WHERE id=:v
         """), {"v": version}).scalar_one_or_none()
         audit(s, auth.user_id, "view_resume_detail", application_id, {"version_id": version})
-    return {**app, "evidence": fields, "issues": issues, "stage": current, "rounds": rounds, "has_preview": bool(preview)}
+    return {**app, "evidence": fields, "issues": issues, "reviewed_extensions":reviewed_extensions, "education": education, "stage": current, "rounds": rounds, "has_preview": bool(preview)}
 
 
 @router.post("/resume-cards/search")
@@ -168,7 +178,12 @@ def preview(application_id: int, page: int = Query(1, ge=1, le=40), version: int
         if version is not None and current != version:
             raise HTTPException(409, "简历版本已更新，请刷新")
         key = s.execute(text("""
-            SELECT coalesce((SELECT object_key FROM resume_preview_page WHERE version_id=:v AND page_no=:page),
+            SELECT coalesce((SELECT CASE WHEN pp.photo_object_key IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM field_usage_policy p JOIN search_state st USING(policy_version)
+                    JOIN field_definition f USING(field_key)
+                    WHERE p.field_key='profile.avatar' AND p.purpose='preview' AND p.allowed AND f.status='active'
+                ) THEN pp.photo_object_key ELSE pp.object_key END
+                FROM resume_preview_page pp WHERE pp.version_id=:v AND pp.page_no=:page),
                             CASE WHEN :page=1 THEN v.preview_key END)
             FROM resume_version v WHERE v.id=:v
         """), {"v": current, "page": page}).scalar_one_or_none()
@@ -221,15 +236,18 @@ def original(application_id: int, auth: AuthContext = Depends(require_auth)):
 
 @router.get("/review")
 def review_queue(offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100),
+                 job_id: int | None = Query(default=None, gt=0), department_id: int | None = Query(default=None, gt=0),
                  auth: AuthContext = Depends(require_dept_hr)):
     with _scope(auth) as s:
         rows = s.execute(text(BASE + """
+            AND (CAST(:job AS bigint) IS NULL OR a.job_id=:job)
+            AND (CAST(:department AS bigint) IS NULL OR a.handling_department_id=:department)
             AND (EXISTS (SELECT 1 FROM resume_field_issue i JOIN field_usage_policy p USING(field_key)
                  WHERE i.version_id=a.active_version_id AND p.policy_version=st.policy_version
                    AND p.purpose='preview' AND p.allowed)
                 OR EXISTS (SELECT 1 FROM resume_extra_value x WHERE x.version_id=a.active_version_id AND NOT x.reviewed AND x.field_key IS NULL))
             ORDER BY a.id DESC LIMIT :n OFFSET :offset
-        """), {"deps": auth.departments, "n": limit+1, "offset": offset}).mappings().all()
+        """), {"deps": auth.departments, "n": limit+1, "offset": offset,"job":job_id,"department":department_id}).mappings().all()
     return {"items": [dict(r) for r in rows[:limit]], "has_more": len(rows)>limit}
 
 
@@ -374,7 +392,8 @@ def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Dep
             raise HTTPException(422, "请输入岗位名称")
         if job_id is None:
             job_id = cn.execute(text("""
-                INSERT INTO job(department_id,title,jd,status) VALUES(:department_id,:title,:jd,:status) RETURNING id
+                INSERT INTO job(department_id,title,jd,status,planned_headcount,target_date)
+                VALUES(:department_id,:title,:jd,:status,:planned_headcount,:target_date) RETURNING id
             """), params).scalar_one()
             save_rounds(cn, job_id, body.rounds if body.rounds is not None else [RoundInput(name=name) for name in DEFAULT_ROUNDS])
         else:
@@ -385,7 +404,12 @@ def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Dep
                 raise HTTPException(404, "岗位不存在")
             if previous != body.department_id:
                 raise HTTPException(422, "已创建的岗位不能更换部门，请新建岗位后调剂")
-            cn.execute(text("UPDATE job SET title=:title,jd=:jd,status=:status WHERE id=:id"), params)
+            cn.execute(text("""
+                UPDATE job SET title=:title,jd=:jd,status=:status,
+                    planned_headcount=CASE WHEN :change_headcount THEN :planned_headcount ELSE planned_headcount END,
+                    target_date=CASE WHEN :change_target THEN :target_date ELSE target_date END WHERE id=:id
+            """), {**params, "change_headcount":"planned_headcount" in body.model_fields_set,
+                    "change_target":"target_date" in body.model_fields_set})
             if body.rounds is not None:
                 save_rounds(cn, job_id, body.rounds)
         audit(cn, auth.user_id, "job_write", job_id, target_type="job")

@@ -5,8 +5,8 @@ from pathlib import Path
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from app.core.extraction import degree_value, masked, norm, parse_period
-from app.core.resume_pipeline import DETAILS, bump_search, clone_extraction, insert, publish
+from app.core.extraction import CONTACT, degree_value, masked, norm, parse_period
+from app.core.resume_pipeline import DETAILS, bump_search, clone_extraction, insert, publish, record_anchor
 from app.core.storage import storage_root
 
 
@@ -65,27 +65,60 @@ def schedule_parse(version_id):
         raise HTTPException(503, "申请已保存，解析队列暂不可用，可从申请列表重试") from error
 
 
-def apply_correction(connection, version_id, record_no, key, value, action):
+def apply_correction(connection, version_id, record_no, key, value, action, *, replay=False, source_span_no=None):
     params = {"v": version_id, "r": record_no, "key": key}
     kind = connection.execute(text("SELECT kind FROM resume_record WHERE version_id=:v AND record_no=:r"), params).scalar_one_or_none()
     issue = connection.execute(text("""
         SELECT span_no FROM resume_field_issue WHERE version_id=:v AND record_no=:r AND field_key=:key
     """), params).one_or_none()
-    if kind is None or issue is None and not (kind == "extension" and key == "extension"):
+    if kind is None:
+        raise HTTPException(404, "复核事项不存在")
+    has_evidence = connection.execute(text("""
+        SELECT min(span_no) FROM resume_evidence_link WHERE version_id=:v AND record_no=:r AND field_key=:key
+    """), params).scalar_one()
+    if not replay and issue is None and has_evidence is None and not (kind == "extension" and key == "extension"):
+        raise HTTPException(404, "复核事项不存在")
+    if source_span_no is not None and connection.execute(text("""
+        SELECT 1 FROM resume_evidence_link WHERE version_id=:v AND record_no=:r AND field_key=:key AND span_no=:span
+    """), {**params,"span":source_span_no}).first():
+        issue = (source_span_no,)
+    elif (issue is None or issue[0] is None) and has_evidence is not None:
+        issue = (has_evidence,)
+    if kind == "extension" and not connection.execute(text("""
+        SELECT 1 FROM resume_extra_value x JOIN resume_source_span s USING(version_id,span_no)
+        WHERE x.version_id=:v AND x.record_no=:r AND x.field_key IS NULL AND NOT s.is_sensitive
+    """), params).first():
         raise HTTPException(404, "复核事项不存在")
     if kind == "extension":
-        if action != "dismiss":
-            raise HTTPException(422, "扩展字段可确认保留原值")
-        connection.execute(text("UPDATE resume_extra_value SET reviewed=true WHERE version_id=:v AND record_no=:r"), params)
+        value = (value or "").strip()
+        if key != "extension" or action == "correct" and (not value or masked(value) != value):
+            raise HTTPException(422, "请输入不含受限信息的核实值")
+        connection.execute(text("""
+            UPDATE resume_extra_value SET reviewed=true,
+              payload=CASE WHEN :correct THEN payload || jsonb_build_object('corrected',CAST(:value AS text)) ELSE payload END
+            WHERE version_id=:v AND record_no=:r
+        """), {**params, "correct": action=="correct", "value":value})
         return
     if action == "dismiss":
+        nullable = {
+            "profile.name":("resume_profile","name"),"profile.city":("resume_profile","city"),
+            "profile.target_role":("resume_profile","target_role"),"education.degree_level":("resume_education","degree_level"),
+            "education.major":("resume_education","major"),"work.title":("resume_work","title"),
+            "work.employment_type":("resume_work","employment_type"),"work.description":("resume_work","description"),
+            "project.role":("resume_project","role"),"project.description":("resume_project","description"),
+        }.get(key)
+        if kind == "contact":
+            connection.execute(text("DELETE FROM resume_contact WHERE version_id=:v AND record_no=:r"), params)
+        elif nullable:
+            table, column = nullable
+            connection.execute(text(f"UPDATE {table} SET {column}=NULL WHERE version_id=:v AND record_no=:r"), params)
         connection.execute(text("DELETE FROM resume_field_issue WHERE version_id=:v AND record_no=:r AND field_key=:key"), params)
         # Unconfirmed extracted data stays excluded from hard screening and publication.
         connection.execute(text("DELETE FROM resume_evidence_link WHERE version_id=:v AND record_no=:r AND field_key=:key"), params)
         connection.execute(text("DELETE FROM resume_record_source WHERE version_id=:v AND record_no=:r AND field_key=:key"), params)
         return
     value = (value or "").strip()
-    if not value or masked(value) != value:
+    if not value or (kind != "contact" and masked(value) != value):
         raise HTTPException(422, "请填写可核实的业务字段")
     column = key.partition(".")[2]
     if kind not in DETAILS or key.split(".")[0] != kind or column in {"photo_present", "school_id", "parent_record_no"}:
@@ -120,6 +153,10 @@ def apply_correction(connection, version_id, record_no, key, value, action):
         if skill is None:
             raise HTTPException(422, "请填写技能词典中的名称")
         data = {"skill_id": skill}
+    elif kind == "contact" and column in CONTACT:
+        if not CONTACT[column].fullmatch(value):
+            raise HTTPException(422, "联系方式格式不正确")
+        data = {"type":column,"value":value}
     elif column in columns and kind not in {"contact", "skill"}:
         data = {column: value}
     else:
@@ -136,7 +173,10 @@ def apply_correction(connection, version_id, record_no, key, value, action):
     if issue and issue[0] is not None:
         locator = connection.execute(text("SELECT locator FROM resume_source_span WHERE version_id=:v AND span_no=:s"),
                                      {"v": version_id, "s": issue[0]}).scalar_one_or_none() or {}
-    locator = {**locator, "confirmed_from_span": issue[0] if issue else None}
+    locator = {**locator, "confirmed_from_span": locator.get("confirmed_from_span", issue[0] if issue else None)}
+    if kind == "contact":
+        connection.execute(text("DELETE FROM resume_field_issue WHERE version_id=:v AND record_no=:r AND field_key=:key"), params)
+        return
     span_no = connection.execute(text("""
         INSERT INTO resume_source_span(version_id,span_no,raw_text,locator,extraction_method,reading_order)
         SELECT :v,coalesce(max(span_no),0)+1,:value,CAST(:location AS jsonb),'manual',coalesce(max(reading_order),0)+1
@@ -156,7 +196,10 @@ def apply_correction(connection, version_id, record_no, key, value, action):
 
 def corrected_version(connection, application, correction):
     old = application["active_version_id"]
-    if old != correction.version_id or old is None or application["pending_version_id"] is not None:
+    pending = application["pending_version_id"]
+    if old != correction.version_id or old is None or pending and connection.execute(
+        text("SELECT status FROM resume_version WHERE id=:v"), {"v":pending}
+    ).scalar_one() == "parsing":
         raise HTTPException(409, "简历版本已变化或正在重新解析")
     new = new_version(connection, old, "parsed")
     clone_extraction(connection, old, new)
@@ -165,14 +208,88 @@ def corrected_version(connection, application, correction):
         SELECT :new,gender,address FROM resume_card_private WHERE version_id=:old
     """), {"new": new, "old": old})
     connection.execute(text("""
-        INSERT INTO resume_preview_page(version_id,page_no,object_key)
-        SELECT :new,page_no,object_key FROM resume_preview_page WHERE version_id=:old
+        INSERT INTO resume_preview_page(version_id,page_no,object_key,photo_object_key)
+        SELECT :new,page_no,object_key,photo_object_key FROM resume_preview_page WHERE version_id=:old
     """), {"new": new, "old": old})
-    apply_correction(connection, new, correction.record_no, correction.field_key, correction.value, correction.action)
+    anchor = ensure_review_anchor(connection, new, correction.record_no)
+    apply_correction(connection, new, correction.record_no, correction.field_key, correction.value, correction.action,
+                     source_span_no=correction.source_span_no)
+    connection.execute(text("""
+        INSERT INTO application_field_review(application_id,review_anchor,field_key,action,version_id,record_no)
+        VALUES(:a,:anchor,:field,:action,:v,:r)
+        ON CONFLICT(application_id,review_anchor,field_key) DO UPDATE
+        SET action=excluded.action,version_id=excluded.version_id,record_no=excluded.record_no
+    """), {"a":application["id"],"anchor":anchor,"field":correction.field_key,"action":correction.action,
+           "v":new,"r":correction.record_no})
     connection.execute(text("UPDATE application SET pending_version_id=:v WHERE id=:a"),
                        {"a": application["id"], "v": new})
     publish(connection, new)
     return new
+
+
+class ReviewReplayError(Exception):
+    pass
+
+
+def ensure_review_anchor(connection, version, record):
+    params = {"v":version,"r":record}
+    row = connection.execute(text("""
+        SELECT kind,review_anchor FROM resume_record WHERE version_id=:v AND record_no=:r
+    """), params).one_or_none()
+    if row is None:
+        raise HTTPException(404, "复核事项不存在")
+    if row.review_anchor:
+        return row.review_anchor
+    sources = connection.execute(text("""
+        SELECT p.span_no,p.start_offset,p.end_offset FROM resume_record_source p
+        JOIN resume_source_span s USING(version_id,span_no)
+        WHERE p.version_id=:v AND p.record_no=:r AND s.extraction_method<>'manual'
+        UNION SELECT p.span_no,p.start_offset,p.end_offset FROM resume_evidence_link p
+        JOIN resume_source_span s USING(version_id,span_no)
+        WHERE p.version_id=:v AND p.record_no=:r AND s.extraction_method<>'manual' AND p.end_offset>p.start_offset
+    """), params).all()
+    anchor = record_anchor(row.kind, [tuple(source) for source in sources])
+    connection.execute(text("UPDATE resume_record SET review_anchor=:anchor WHERE version_id=:v AND record_no=:r"),
+                       {**params,"anchor":anchor})
+    return anchor
+
+
+def replay_reviews(connection, version):
+    # A correction created before the review journal existed must never be silently discarded.
+    legacy = connection.execute(text("""
+        SELECT 1 FROM application a JOIN resume_evidence_link e ON e.version_id=a.active_version_id
+        JOIN resume_source_span s USING(version_id,span_no)
+        JOIN resume_record r USING(version_id,record_no)
+        WHERE a.pending_version_id=:v AND s.extraction_method='manual' AND NOT EXISTS (
+            SELECT 1 FROM application_field_review c WHERE c.application_id=a.id
+            AND c.field_key=e.field_key AND c.review_anchor=r.review_anchor
+        ) LIMIT 1
+    """), {"v":version}).first()
+    if legacy:
+        raise ReviewReplayError()
+    entries = connection.execute(text("""
+        SELECT r.*,
+          CASE WHEN r.field_key='extension' THEN (SELECT payload->>'corrected' FROM resume_extra_value x
+                   WHERE x.version_id=r.version_id AND x.record_no=r.record_no)
+               WHEN r.field_key IN ('contact.phone','contact.email') THEN (SELECT c.value FROM resume_contact c
+                   WHERE c.version_id=r.version_id AND c.record_no=r.record_no)
+               ELSE (SELECT s.raw_text FROM resume_evidence_link e JOIN resume_source_span s USING(version_id,span_no)
+                   WHERE e.version_id=r.version_id AND e.record_no=r.record_no AND e.field_key=r.field_key
+                     AND s.extraction_method='manual' LIMIT 1)
+           END AS value
+        FROM application_field_review r JOIN application a ON a.id=r.application_id
+        WHERE a.pending_version_id=:v ORDER BY r.version_id,r.record_no
+    """), {"v":version}).mappings().all()
+    for entry in entries:
+        candidates = connection.execute(text("""
+            SELECT record_no FROM resume_record WHERE version_id=:v AND review_anchor=:anchor LIMIT 2
+        """), {"v":version,"anchor":entry["review_anchor"]}).scalars().all()
+        if len(candidates)!=1:
+            raise ReviewReplayError()
+        try:
+            apply_correction(connection,version,candidates[0],entry["field_key"],entry["value"],entry["action"],replay=True)
+        except HTTPException as exc:
+            raise ReviewReplayError() from exc
 
 
 def cleanup_files(connection):
@@ -208,6 +325,8 @@ def purge_application(connection, row, actor, reason):
                   WHERE d.candidate_id=:c AND v.avatar_key IS NOT NULL
             UNION SELECT p.object_key FROM resume_preview_page p JOIN resume_version v ON v.id=p.version_id
                   JOIN resume_document d ON d.id=v.document_id WHERE d.candidate_id=:c
+            UNION SELECT p.photo_object_key FROM resume_preview_page p JOIN resume_version v ON v.id=p.version_id
+                  JOIN resume_document d ON d.id=v.document_id WHERE d.candidate_id=:c AND p.photo_object_key IS NOT NULL
             ON CONFLICT DO NOTHING
         """), {"c": candidate})
         connection.execute(text("DELETE FROM resume_version USING resume_document d WHERE d.id=document_id AND d.candidate_id=:c"), {"c": candidate})

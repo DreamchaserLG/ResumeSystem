@@ -1,24 +1,22 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NLayout,
   NLayoutSider,
   NLayoutHeader,
   NLayoutContent,
-  NIcon,
-  NAvatar,
-  NDropdown,
 } from 'naive-ui'
 import {
   GridOutline,
+  BarChartOutline,
   DocumentsOutline,
   SearchOutline,
   CreateOutline,
   BriefcaseOutline,
   ShieldCheckmarkOutline,
-  LogOutOutline,
 } from '@vicons/ionicons5'
+import ProfileMenu from '@/components/ProfileMenu.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -32,6 +30,7 @@ onUnmounted(() => narrow.removeEventListener('change', onWidth))
 const menuItems = [
   { label: '工作台', key: 'dashboard', icon: GridOutline },
   { label: '岗位管理', key: 'jobs', icon: BriefcaseOutline },
+  { label: '统计管理', key: 'statistics', icon: BarChartOutline },
   { label: '简历管理', key: 'applications', icon: DocumentsOutline },
   { label: '候选人检索', key: 'search', icon: SearchOutline },
   { label: '复核队列', key: 'review', icon: CreateOutline },
@@ -39,18 +38,13 @@ const menuItems = [
   { label: '系统设置', key: 'admin', icon: ShieldCheckmarkOutline },
 ]
 const menus = computed(() => menuItems.filter(item => (auth.isSuperAdmin
-  ? ['dashboard','jobs','audit','admin'] : ['dashboard','jobs','applications','search','review']).includes(item.key)))
+  ? ['dashboard','jobs','statistics','audit','admin'] : ['dashboard','jobs','statistics','applications','search','review']).includes(item.key)))
 const activeMenu = computed(() => route.name === 'application-detail' ? 'applications' : route.name)
 
-const userOptions = [{ label: '退出登录', key: 'logout', icon: () => h(NIcon, null, { default: () => h(LogOutOutline) }) }]
-
-function onUserAction(key: string) {
-  if (key === 'logout') {
-    auth.logout()
-    router.push('/login')
-  }
+function logout() {
+  auth.logout()
+  router.push('/login')
 }
-
 </script>
 
 <template>
@@ -66,12 +60,22 @@ function onUserAction(key: string) {
       @update:collapsed="(v: boolean) => (collapsed = v)"
       class="sider" :class="{ collapsed }"
     >
-      <div class="logo-bar">
-        <div class="logo-mark">R</div>
-        <transition name="fade">
-          <span v-if="!collapsed" class="logo-name">智能简历筛选</span>
-        </transition>
-      </div>
+      <RouterLink to="/dashboard" class="logo-bar" aria-label="新百 CENBEST · 返回工作台">
+        <svg class="logo-mark" viewBox="0 0 129 56" aria-hidden="true" focusable="false">
+          <defs>
+            <!-- The supplied red artwork is on white. Recover its edge opacity from the green channel. -->
+            <filter id="sidebar-brand-ink" color-interpolation-filters="sRGB">
+              <feColorMatrix type="matrix" values="
+                0 0 0 0 1
+                0 0 0 0 .36
+                0 0 0 0 .40
+                0 -1 0 0 1" />
+            </filter>
+          </defs>
+          <image href="/cenbest.png" width="129" height="56" filter="url(#sidebar-brand-ink)" />
+        </svg>
+        <span v-if="!collapsed" class="logo-name">招聘工作台</span>
+      </RouterLink>
       <nav class="side-nav" aria-label="工作区导航">
         <RouterLink v-for="item in menus" :key="item.key" :to="'/' + item.key" class="side-link"
           :class="{ current: activeMenu === item.key }" :aria-current="activeMenu === item.key ? 'page' : undefined"
@@ -89,19 +93,7 @@ function onUserAction(key: string) {
           <span class="page-title">{{ (route.meta.title as string) ?? '' }}</span>
         </div>
         <div class="header-right">
-          <NDropdown :options="userOptions" @select="onUserAction">
-            <div class="user-chip">
-              <NAvatar round :size="30" class="user-avatar">
-                {{ auth.session?.displayName?.slice(0, 1) ?? 'U' }}
-              </NAvatar>
-              <div class="user-meta">
-                <span class="user-name">{{ auth.session?.displayName ?? '未登录' }}</span>
-                <span class="user-role">
-                  {{ auth.isSuperAdmin ? '超级管理员' : '部门 HR' }}
-                </span>
-              </div>
-            </div>
-          </NDropdown>
+          <ProfileMenu @logout="logout"/>
         </div>
       </NLayoutHeader>
 
@@ -118,20 +110,20 @@ function onUserAction(key: string) {
 
 <style scoped>
 .sider {
-  background: #172641 !important;
-  color: #e9f0ff;
+  background: #273c56 !important;
+  color: #eef4fc;
 }
 .sider :deep(.n-layout-sider-scroll-container) {
-  background: linear-gradient(180deg,#182844,#122039);
+  background: linear-gradient(180deg,#304763,#263a54);
 }
 .sider :deep(.n-layout-toggle-button) {
-  background:#314b75; color:#fff; border:1px solid #59739f;
+  background:#405b7c; color:#fff; border:1px solid #7188a5;
 }
 
 .side-nav { display:grid; gap:6px; padding:8px; }
-.side-link { display:flex; align-items:center; gap:9px; min-height:42px; padding:0 10px; border-radius:8px; color:#c7d4ec; text-decoration:none; font-size:14px; white-space:nowrap; }
-.side-link:hover { background:#263856; color:#fff; }
-.side-link.current { background:#344d79; color:#fff; }
+.side-link { display:flex; align-items:center; gap:9px; min-height:42px; padding:0 10px; border-radius:8px; color:#dce6f5; text-decoration:none; font-size:14px; white-space:nowrap; }
+.side-link:hover { background:#3b526f; color:#fff; }
+.side-link.current { background:#465f81; color:#fff; }
 .side-link:focus-visible { outline:2px solid #a9c4f0; outline-offset:-2px; }
 .side-icon { width:20px; height:20px; flex:none; color:inherit; }
 .collapsed .side-link { justify-content:center; padding:0; }
@@ -142,36 +134,21 @@ function onUserAction(key: string) {
   align-items: center;
   gap: 10px;
   padding: 0 16px;
-  border-bottom: 1px solid #2d4062;
+  border-bottom: 1px solid #48607c;
   overflow: hidden;
+  color: inherit;
+  text-decoration: none;
 }
-.logo-mark {
-  width: 32px;
-  height: 32px;
-  flex: none;
-  border-radius: 8px;
-  background: var(--rs-gradient);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-weight: 800;
-  font-size: 16px;
-  box-shadow: 0 4px 14px rgba(91, 124, 250, 0.4);
-}
+.logo-mark { display:block; flex:none; width:90px; height:auto; }
+.collapsed .logo-bar { padding:0; justify-content:center; }
+.collapsed .logo-mark { width:48px; }
 .logo-name {
   font-weight: 700;
-  font-size: 15px;
-  letter-spacing: 0.5px;
+  font-size: 14px;
+  letter-spacing: 0.2px;
   white-space: nowrap;
 }
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.15s;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
+.logo-bar:focus-visible { outline: 2px solid #a9c4f0; outline-offset: -2px; }
 
 .header {
   height: var(--rs-header-height);
@@ -195,53 +172,6 @@ function onUserAction(key: string) {
   align-items: center;
   gap: 14px;
 }
-.icon-btn {
-  width: 34px;
-  height: 34px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--rs-text-secondary);
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition: all 0.15s;
-}
-.icon-btn:hover {
-  background: var(--rs-primary-soft);
-  color: var(--rs-primary);
-}
-.user-chip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 10px 5px 5px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.user-chip:hover {
-  background: var(--rs-primary-soft);
-}
-.user-avatar {
-  background: var(--rs-gradient);
-  color: #fff;
-  font-weight: 700;
-}
-.user-meta {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
-}
-.user-name {
-  font-size: 13px;
-  font-weight: 600;
-}
-.user-role {
-  font-size: 11px;
-  color: var(--rs-text-tertiary);
-}
-
 .content {
   height:calc(100dvh - var(--rs-header-height));
   background: var(--rs-bg);

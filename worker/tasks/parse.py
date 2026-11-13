@@ -12,6 +12,7 @@ from app.core.db import owner_engine
 from app.core.extraction import private_card_fields
 from app.core.resume_pipeline import insert, prepare_extraction, publish, write_extraction
 from app.core.storage import save_preview
+from app.core.workflow import ReviewReplayError, replay_reviews
 
 logger = logging.getLogger("worker.parse")
 
@@ -95,11 +96,15 @@ def process_resume(version_id: int):
                 return {"ok": True, "already_processed": True}
             pipeline.emit_spans(pd, version_id, cn)
             write_extraction(cn, version_id, records)
+            replay_reviews(cn, version_id)
             page_rows = []
-            for index, content in pages:
+            for index, content, photo in pages:
                 key = save_preview(content, f"resume-version-{version_id}-{index}")
                 rendered_keys.append(key)
-                page_rows.append({"version_id": version_id, "page_no": index, "object_key": key})
+                photo_key = save_preview(photo, f"resume-photo-version-{version_id}-{index}") if photo else None
+                if photo_key:
+                    rendered_keys.append(photo_key)
+                page_rows.append({"version_id": version_id, "page_no": index, "object_key": key, "photo_object_key":photo_key})
             avatar_key = save_preview(avatar, f"resume-avatar-{version_id}") if avatar else None
             if avatar_key:
                 rendered_keys.append(avatar_key)
@@ -123,10 +128,12 @@ def process_resume(version_id: int):
             for key in rendered_keys:
                 (Path(storage_root()) / key).unlink(missing_ok=True)
         logger.error("process_resume failed for version %s (%s)", version_id, type(exc).__name__)
+        reason = ("新解析未能匹配已复核字段，已保留当前版本。" if isinstance(exc, ReviewReplayError)
+                  else "解析或字段抽取失败，请核对文件格式后重试")
         with owner_engine.begin() as cn:
             cn.execute(
                 text("UPDATE resume_version SET status='failed', fail_reason=:r WHERE id = :i AND status <> 'published'"),
-                {"r": "解析或字段抽取失败，请核对文件格式后重试", "i": version_id},
+                {"r":reason,"i":version_id},
             )
         raise
 

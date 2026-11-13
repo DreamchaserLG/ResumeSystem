@@ -20,6 +20,7 @@ const router = createRouter({
           component: () => import('@/views/DashboardView.vue'),
           meta: { title: '工作台' },
         },
+        { path: 'statistics', name: 'statistics', component: () => import('@/views/StatisticsView.vue'), meta: { title: '统计管理' } },
         {
           path: 'applications',
           name: 'applications',

@@ -6,6 +6,14 @@ RUN sed '/^# M3/,$d' requirements.txt >/tmp/requirements-api.txt \
     && pip install -r /tmp/requirements-api.txt \
     && useradd --uid 1000 --create-home resume \
     && install -d -o resume -g resume /data/storage
+FROM base AS api
+COPY app/ app/
+COPY worker/ worker/
+COPY migrations/ migrations/
+USER resume
+EXPOSE 8000
+CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]
+
 FROM base AS worker
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer libseccomp2 libgomp1 fonts-noto-cjk \
@@ -19,11 +27,3 @@ COPY app/ app/
 COPY worker/ worker/
 USER resume
 CMD ["celery","-A","worker.celery_app","worker","-l","info","--concurrency","1"]
-
-FROM base AS api
-COPY app/ app/
-COPY worker/ worker/
-COPY migrations/ migrations/
-USER resume
-EXPOSE 8000
-CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]

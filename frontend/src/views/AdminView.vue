@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import { loadJobs, type Department, type Job } from '@/api/hr'
 interface Settings {
@@ -11,6 +12,9 @@ interface Settings {
   school_filters: { job_id: number; tag_code: string; reason: string }[]
 }
 const data = ref<Settings>()
+const route = useRoute()
+const focusDepartment = computed(() => data.value?.departments.find(d => String(d.id) === route.query.department))
+const accounts = computed(() => data.value?.users.filter(u => !focusDepartment.value || u.departments.includes(focusDepartment.value.id)) ?? [])
 const jobs = ref<Job[]>([])
 const error = ref(''), message = ref('')
 const busy = ref(false)
@@ -42,8 +46,9 @@ async function saveClient() {
     <header class="rs-heading"><div><h1>系统设置</h1><p>管理部门、访问权限与对外接口</p></div></header>
     <p v-if="error" class="rs-error" role="alert">{{ error }}</p><p v-if="message" class="rs-message" role="status">{{ message }}</p>
     <div v-if="data" class="rs-two-col">
-      <section class="rs-card rs-panel">
+      <section id="accounts" class="rs-card rs-panel">
         <h2>部门与账号</h2>
+        <p v-if="focusDepartment" class="rs-muted">{{ focusDepartment.name }} <RouterLink to="/admin#accounts">查看全部账号</RouterLink></p>
         <form class="rs-form" @submit.prevent="save(async () => { await api.post('/admin/departments', { name: dept }); dept = '' })">
           <label class="grow">部门名称<input v-model="dept" required></label><button class="rs-button" :disabled="busy">新建部门</button>
         </form>
@@ -51,7 +56,8 @@ async function saveClient() {
           <label>姓名<input v-model="user.display_name" required></label><label>邮箱<input v-model="user.email" type="email" required></label>
           <label>初始密码<input v-model="user.password" type="password" minlength="8" required></label><button class="rs-button" :disabled="busy">新建账号</button>
         </form>
-        <table class="rs-table"><thead><tr><th>账号</th><th>角色或授权部门</th></tr></thead><tbody><tr v-for="u in data.users" :key="u.id"><td>{{ u.display_name }}<br><small>{{ u.email }}</small></td><td>{{ u.super_admin ? '超级管理员' : data.departments.filter(d => u.departments.includes(d.id)).map(d => d.name).join('、') || '待授权' }}</td></tr></tbody></table>
+        <table class="rs-table"><thead><tr><th>账号</th><th>角色或授权部门</th></tr></thead><tbody><tr v-for="u in accounts" :key="u.id"><td>{{ u.display_name }}<br><small>{{ u.email }}</small></td><td>{{ u.super_admin ? '超级管理员' : data.departments.filter(d => u.departments.includes(d.id)).map(d => d.name).join('、') || '待授权' }}</td></tr></tbody></table>
+        <p v-if="focusDepartment && !accounts.length" class="rs-muted">该部门暂无已授权账号。</p>
       </section>
       <section class="rs-card rs-panel">
         <h2>访问授权</h2>

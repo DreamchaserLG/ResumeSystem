@@ -4,7 +4,7 @@ import { ExpandOutline, ContractOutline } from '@vicons/ionicons5'
 import { api } from '@/api/client'
 import type { ResumeCard } from '@/api/hr'
 
-const props = defineProps<{ resume: ResumeCard }>()
+const props = defineProps<{ resume: ResumeCard; avatarUrl?: string }>()
 const emit = defineEmits<{ close: []; pageRatio: [ratio: number]; fullscreenChange: [active: boolean] }>()
 const fullscreen = ref(false)
 const reader = ref<HTMLElement>()
@@ -101,7 +101,10 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
   <component :is="fullscreen ? 'dialog' : 'aside'" ref="reader"
     class="resume-reader" :class="{ 'resume-fullscreen': fullscreen }" aria-label="简历预览" @cancel.prevent="setFullscreen(false)">
     <header>
-      <div><span class="reader-kicker">简历预览</span><h2>{{ resume.name || '申请 #' + resume.id }}</h2></div>
+      <div class="reader-identity">
+        <img v-if="avatarUrl" class="reader-avatar" :src="avatarUrl" alt="">
+        <div><span class="reader-kicker">简历预览</span><h2>{{ resume.name || '申请 #' + resume.id }}</h2></div>
+      </div>
       <div class="reader-actions"><RouterLink :to="'/applications/' + resume.id">申请详情</RouterLink>
         <button ref="fullscreenButton" type="button" class="reader-close reader-expand" :aria-label="fullscreen ? '退出全屏' : '全屏预览'"
           :title="fullscreen ? '退出全屏' : '全屏预览'" @click="setFullscreen(!fullscreen)">
@@ -132,6 +135,8 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
 .resume-reader { display:grid; grid-template-rows:auto minmax(0,1fr) auto auto; min-width:0; min-height:0; background:#edf1f8; border:1px solid #dde5f1; border-radius:20px; overflow:hidden; box-shadow:0 12px 30px #162d5b0f; }
 header, footer { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 15px; }
 header { background:#fff; border-bottom:1px solid #e4ebf5; }
+.reader-identity { display:flex; align-items:center; gap:9px; min-width:0; }
+.reader-avatar { width:36px; height:36px; object-fit:cover; border-radius:8px; flex:none; }
 header h2 { margin:1px 0 0; font-size:16px; overflow-wrap:anywhere; }
 .reader-expand { display:grid; place-items:center; }
 .reader-expand svg { width:17px; height:17px; }

@@ -1,25 +1,26 @@
 /* ============ 设计系统 Design Tokens ============ */
 :root {
+  --rs-font-family: 'Noto Sans SC Variable', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   /* 品牌色 */
-  --rs-primary: #4f6bed;
-  --rs-primary-hover: #3d5af1;
-  --rs-primary-soft: rgba(79, 107, 237, 0.1);
-  --rs-gradient: linear-gradient(135deg, #5b7cfa 0%, #3d5af1 55%, #2f48c4 100%);
+  --rs-primary: #4e6fa4;
+  --rs-primary-hover: #405f93;
+  --rs-primary-soft: rgba(78, 111, 164, 0.12);
+  --rs-gradient: linear-gradient(135deg, #6788b8 0%, #4e6fa4 55%, #3a5886 100%);
   --rs-gradient-soft: linear-gradient(135deg, rgba(91, 124, 250, 0.12), rgba(61, 90, 241, 0.06));
 
   /* 中性色 */
-  --rs-bg: #f5f7fb;
+  --rs-bg: #f6f8fc;
   --rs-bg-card: #ffffff;
   --rs-text: #1c2333;
   --rs-text-secondary: #5a6478;
   --rs-text-tertiary: #98a1b3;
-  --rs-border: #e6eaf2;
+  --rs-border: #e4eaf3;
 
   /* 语义色 */
   --rs-success: #22a06b;
   --rs-warning: #e8930c;
   --rs-danger: #e5484d;
-  --rs-info: #4f6bed;
+  --rs-info: #4e6fa4;
 
   /* 几何 */
   --rs-radius: 12px;
@@ -57,17 +58,12 @@ html,
 body,
 #app {
   height: 100%;
-  font-family:
-    'PingFang SC',
-    'HarmonyOS Sans SC',
-    'Microsoft YaHei',
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
+  font-family: var(--rs-font-family);
   color: var(--rs-text);
   background: var(--rs-bg);
 }
+
+button, input, select, textarea { font-family: inherit; }
 
 /* Naive UI Provider 中间层补高度链 */
 #app > .n-config-provider,
@@ -133,7 +129,7 @@ body,
 }
 
 .content { height: calc(100vh - var(--rs-header-height)); overflow: auto; }
-.rs-workspace { display: grid; gap: 18px; }
+.rs-workspace { display: grid; gap: 14px; align-content: start; }
 .rs-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .rs-heading h1 { font-size: clamp(21px, 3vw, 29px); line-height: 1.25; letter-spacing: -.035em; }
 .rs-heading p { margin-top: 6px; color: var(--rs-text-secondary); }
@@ -169,3 +165,30 @@ body,
 .rs-two-col { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .rs-preview { width: min(100%, 540px); height: auto; border: 1px solid var(--rs-border); }
 @media (max-width: 850px) { .rs-page { padding: 16px; } .rs-two-col { grid-template-columns: 1fr; } }
+
+:root {
+  --rs-focus: #3459c7;
+  --rs-motion-feedback: 140ms;
+  --rs-motion-panel: 180ms;
+}
+
+:where(button, a, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--rs-focus);
+  outline-offset: 3px;
+}
+.rs-button {
+  justify-content: center;
+  transition: background-color var(--rs-motion-feedback), border-color var(--rs-motion-feedback), color var(--rs-motion-feedback);
+}
+.rs-button:not(:disabled):hover { background: var(--rs-bg); border-color: #b8c7e4; }
+.rs-button.primary:not(:disabled):hover { color: #fff; background: var(--rs-primary-hover); border-color: var(--rs-primary-hover); }
+.rs-button:not(:disabled):active { border-color: var(--rs-primary); }
+.rs-table tbody tr:hover { background: #f8fafe; }
+
+@media (pointer: coarse) {
+  .rs-button { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rs-button, .fade-slide-enter-active, .fade-slide-leave-active { transition: none; }
+  .fade-slide-enter-from, .fade-slide-leave-to { opacity: 1; transform: none; }
+}

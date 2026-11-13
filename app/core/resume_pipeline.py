@@ -1,5 +1,6 @@
 """Persist extracted records, source ranges and the approved keyword projection."""
 from collections import defaultdict
+import hashlib
 import json
 
 from sqlalchemy import text
@@ -12,12 +13,12 @@ DETAILS = {
     "education": ("resume_education", ("school_raw", "school_id", "degree_level", "major", "start_date", "end_date", "start_period_raw", "end_period_raw")),
     "work": ("resume_work", ("company", "title", "employment_type", "start_date", "end_date", "start_period_raw", "end_period_raw", "is_current", "description")),
     "project": ("resume_project", ("project_name", "role", "start_date", "end_date", "start_period_raw", "end_period_raw", "is_current", "description")),
-    "skill": ("resume_skill", ("skill_id", "parent_record_no")),
+    "skill": ("resume_skill", ("skill_id", "parent_record_no", "language_priority")),
     "extension": ("resume_extra_value", ("field_key", "raw_label", "payload", "span_no", "rule_version", "reviewed")),
 }
 COPY_TABLES = {
     "resume_source_span": ("span_no", "span_kind", "raw_text", "locator", "extraction_method", "is_sensitive", "ocr_confidence", "reading_order"),
-    "resume_record": ("record_no", "kind"),
+    "resume_record": ("record_no", "kind", "review_anchor"),
     **{table: ("record_no", *columns) for table, columns in DETAILS.values()},
     "resume_evidence_link": ("record_no", "field_key", "span_no", "start_offset", "end_offset"),
     "resume_field_issue": ("record_no", "field_key", "span_no", "reason"),
@@ -35,7 +36,8 @@ def prepare_extraction(connection, document):
         "SELECT canonical_name,id FROM school UNION ALL SELECT alias_normalized,school_id FROM school_alias"
     )):
         schools[norm(alias)].add(key)
-    return extract_document(document, aliases, skills, schools)
+    languages = set(connection.execute(text("SELECT id FROM skill WHERE is_programming_language")).scalars())
+    return extract_document(document, aliases, skills, schools, languages)
 
 
 def insert(connection, table, rows):
@@ -56,7 +58,8 @@ def _detail(record, record_numbers):
         return {"type": key.split(".")[-1], "value": value} if value else None
     elif kind == "skill":
         skill = record.fields.get("skill.name")
-        return {"skill_id": skill, "parent_record_no": record_numbers.get(id(record.parent))} if skill else None
+        return {"skill_id": skill, "parent_record_no": record_numbers.get(id(record.parent)),
+                "language_priority": record.fields.get("language_priority")} if skill else None
     elif kind == "extension":
         key, label, payload = record.fields["extension"]
         return {"field_key": key, "raw_label": label, "payload": json.dumps(payload, ensure_ascii=False),
@@ -72,10 +75,21 @@ def _detail(record, record_numbers):
     return values
 
 
+def record_anchor(kind, evidence):
+    if kind == "profile":
+        return "profile"
+    raw = json.dumps([kind, sorted(set(evidence))], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def write_extraction(connection, version_id, records):
     numbers = {id(record): number for number, record in enumerate(records, 1)}
     insert(connection, "resume_record", [
-        {"version_id": version_id, "record_no": numbers[id(record)], "kind": record.kind} for record in records
+        {"version_id": version_id, "record_no": numbers[id(record)], "kind": record.kind,
+         "review_anchor": record_anchor(record.kind, [
+             (src.span, src.start, src.end) for sources in record.sources.values() for src in sources if src.end > src.start
+         ])}
+        for record in records
     ])
     fields = set(connection.execute(text("SELECT field_key FROM field_definition WHERE status='active'")).scalars())
     batches = defaultdict(list)

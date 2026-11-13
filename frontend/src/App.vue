@@ -10,24 +10,24 @@ document.documentElement.classList.remove('dark')
 
 const overrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: '#4f6bed',
-    primaryColorHover: '#3d5af1',
-    primaryColorPressed: '#2f48c4',
-    primaryColorSuppl: '#5b7cfa',
+    primaryColor: '#4e6fa4',
+    primaryColorHover: '#405f93',
+    primaryColorPressed: '#355282',
+    primaryColorSuppl: '#6483b1',
     borderRadius: '8px',
     fontSize: '14px',
-    fontFamily:
-      "'PingFang SC','HarmonyOS Sans SC','Microsoft YaHei',system-ui,-apple-system,'Segoe UI',sans-serif",
+    fontFamily: 'var(--rs-font-family)',
   },
   Card: { borderRadius: '12px' },
   Button: { borderRadiusMedium: '8px' },
+  Message: { colorSuccess: '#e3f5ed', textColorSuccess: '#14533f', iconColorSuccess: '#187653' },
 }
 
 </script>
 
 <template>
   <NConfigProvider :theme-overrides="overrides">
-    <NMessageProvider>
+    <NMessageProvider placement="top-right" :duration="3000" :max="3">
       <NDialogProvider>
         <RouterView />
       </NDialogProvider>

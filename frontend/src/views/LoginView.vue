@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import { NButton, NForm, NFormItem, NInput, NIcon, useMessage } from "naive-ui";
+import { NButton, NInput, NIcon, useMessage } from "naive-ui";
 import {
-  PersonOutline,
+  MailOutline,
   LockClosedOutline,
-  ArrowForward,
 } from "@vicons/ionicons5";
+import sorterConcept from "@/assets/resume-sorter-concept.webp";
 import { api } from "@/api/client";
 import { useAuthStore } from "@/stores/auth";
 
@@ -18,7 +18,9 @@ const loading = ref(false);
 const form = ref({ username: "", password: "" });
 
 async function handleLogin() {
-  if (!form.value.username || !form.value.password) {
+  if (loading.value) return;
+  const email = form.value.username.trim();
+  if (!email || !form.value.password) {
     message.warning("请输入企业邮箱与密码");
     return;
   }
@@ -35,7 +37,7 @@ async function handleLogin() {
         display_departments: string[];
       };
     }>("/auth/login", {
-      email: form.value.username.trim(),
+      email,
       password: form.value.password,
     });
     localStorage.setItem("rs-token", resp.token);
@@ -46,9 +48,9 @@ async function handleLogin() {
       departmentName: resp.session.display_departments.join("、") || undefined,
     });
     message.success("登录成功");
-    router.push("/dashboard");
-  } catch (e: any) {
-    message.error(e?.message ?? "登录失败，请检查企业邮箱与密码");
+    await router.replace("/dashboard");
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : "登录失败，请检查企业邮箱与密码");
   } finally {
     loading.value = false;
   }
@@ -56,297 +58,120 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="login-page">
-    <!-- 背景装饰 -->
-    <div class="bg-orb bg-orb-1" />
-    <div class="bg-orb bg-orb-2" />
-    <div class="bg-grid" />
-
-    <div class="login-panel">
-      <!-- 左：品牌区 -->
-      <div class="brand-side">
-        <div class="brand-logo">
-          <div class="logo-mark">R</div>
-          <span class="logo-text">智能简历筛选系统</span>
-        </div>
-
-        <h1 class="brand-headline">
-          让每一位候选人<br />
-          都被<span class="highlight">准确看见</span>
-        </h1>
-        <p class="brand-desc">
-          结构化提取 · 原文证据回溯 · 关键词检索<br />
-          为企业内部招聘提供可验证的筛选依据
-        </p>
-
-        <ul class="brand-features">
-          <li>
-            <span class="feat-dot" />硬条件 SQL 筛选，学历 / 年限 / 技能精确匹配
-          </li>
-          <li><span class="feat-dot" />关键词 + 同义词检索，证据可跳回原文</li>
-          <li>
-            <span class="feat-dot" />字段用途 default-deny，照片与敏感信息隔离
-          </li>
-          <li><span class="feat-dot" />有头像 / 无头像简历分层评估</li>
-        </ul>
-
-        <div class="brand-foot">v1 · 企业内部招聘</div>
-      </div>
-
-      <!-- 右：登录卡 -->
-      <div class="form-side">
-        <div class="login-card">
-          <h2 class="card-title">欢迎回来</h2>
-          <p class="card-sub">使用企业内部账号登录</p>
-
-          <NForm :show-label="false" size="large" @keyup.enter="handleLogin">
-            <NFormItem>
-              <NInput v-model:value="form.username" placeholder="企业邮箱">
-                <template #prefix>
-                  <NIcon :component="PersonOutline" class="input-icon" />
-                </template>
-              </NInput>
-            </NFormItem>
-            <NFormItem>
-              <NInput
-                v-model:value="form.password"
-                type="password"
-                show-password-on="click"
-                placeholder="密码"
-              >
-                <template #prefix>
-                  <NIcon :component="LockClosedOutline" class="input-icon" />
-                </template>
-              </NInput>
-            </NFormItem>
-            <NButton
-              type="primary"
-              block
-              size="large"
-              :loading="loading"
-              class="login-btn"
-              @click="handleLogin"
-            >
-              登 录
-              <template #icon>
-                <NIcon :component="ArrowForward" />
-              </template>
-            </NButton>
-          </NForm>
-
-          <div class="hint-block">
-            账号由超级管理员统一开通。忘记密码请联系系统管理员重置。
-          </div>
-        </div>
-      </div>
+  <main class="login-page">
+    <div class="login-visual" aria-hidden="true">
+      <svg class="visual-backdrop" viewBox="0 0 1000 900" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="login-panel-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop stop-color="#eaf3fd" />
+            <stop offset="1" stop-color="#d7e8fa" />
+          </linearGradient>
+        </defs>
+        <path d="M0 0H1000C870 175 858 338 892 520C920 668 864 795 756 900H0Z" fill="url(#login-panel-blue)" />
+      </svg>
+      <svg class="sorter-illustration" viewBox="0 165 934 595" role="presentation">
+        <image :href="sorterConcept" x="0" y="0" width="1672" height="941" />
+      </svg>
     </div>
-  </div>
+
+    <section class="login-content" aria-labelledby="login-title">
+      <div class="login-card">
+        <img class="login-logo" src="/cenbest.png" alt="新百 CENBEST" width="129" height="56">
+        <h1 id="login-title">智能简历筛选系统</h1>
+        <p class="login-subtitle">请使用企业账号登录</p>
+
+        <form class="login-form" @submit.prevent="handleLogin">
+          <NInput
+            v-model:value="form.username" size="large" placeholder="企业邮箱"
+            :input-props="{ 'aria-label':'企业邮箱', autocomplete:'username', inputmode:'email', spellcheck:false }"
+          >
+            <template #prefix><NIcon :component="MailOutline" class="input-icon" aria-hidden="true" /></template>
+          </NInput>
+          <NInput
+            v-model:value="form.password" size="large" type="password" show-password-on="click" placeholder="密码"
+            :input-props="{ 'aria-label':'密码', autocomplete:'current-password' }"
+          >
+            <template #prefix><NIcon :component="LockClosedOutline" class="input-icon" aria-hidden="true" /></template>
+          </NInput>
+          <NButton attr-type="submit" type="primary" block :loading="loading" class="login-btn">
+            登录
+          </NButton>
+        </form>
+
+        <p class="login-help">账号由管理员开通。忘记密码请联系管理员。</p>
+      </div>
+    </section>
+  </main>
 </template>
 
 <style scoped>
 .login-page {
-  height: 100%;
-  background:
-    radial-gradient(
-      1200px 600px at 85% -10%,
-      rgba(91, 124, 250, 0.25),
-      transparent 60%
-    ),
-    radial-gradient(
-      900px 500px at -10% 110%,
-      rgba(47, 72, 196, 0.35),
-      transparent 55%
-    ),
-    linear-gradient(160deg, #101425 0%, #1a2140 55%, #232c55 100%);
-  color: #eef1fb;
-  overflow: hidden;
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 56fr) minmax(0, 44fr);
+  min-height: 100%;
+  min-height: 100dvh;
+  background: #fff;
+  color: #202e42;
 }
 
-.bg-orb {
+.login-visual {
   position: absolute;
-  border-radius: 50%;
-  filter: blur(90px);
-  opacity: 0.5;
-  animation: float 12s ease-in-out infinite alternate;
-}
-.bg-orb-1 {
-  width: 420px;
-  height: 420px;
-  background: #5b7cfa;
-  top: -120px;
-  right: -80px;
-}
-.bg-orb-2 {
-  width: 360px;
-  height: 360px;
-  background: #2f48c4;
-  bottom: -100px;
-  left: -60px;
-  animation-delay: -6s;
-}
-.bg-grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-  background-size: 44px 44px;
-  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  inset: 0 auto 0 0;
+  width: 62%;
+  display: grid;
+  align-items: center;
+  pointer-events: none;
 }
 
-@keyframes float {
-  from {
-    transform: translateY(-12px);
-  }
-  to {
-    transform: translateY(16px);
-  }
+.visual-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sorter-illustration {
+  position: relative;
+  display: block;
+  width: 86%;
+  max-height: 74dvh;
+  margin-inline: 2.5% auto;
+  mask-image: linear-gradient(to right, transparent, #000 5% 95%, transparent),
+    linear-gradient(to bottom, transparent, #000 13% 87%, transparent);
+  mask-composite: intersect;
 }
 
-.login-panel {
+.login-content {
   position: relative;
   z-index: 1;
-  height: 100%;
-  display: grid;
-  grid-template-columns: 1.15fr 1fr;
-  align-items: center;
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 48px;
-  gap: 64px;
-}
-
-/* ---- 品牌区 ---- */
-.brand-logo {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 48px;
-}
-.logo-mark {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: var(--rs-gradient);
+  grid-column: 2;
   display: grid;
   place-items: center;
-  font-weight: 800;
-  font-size: 20px;
-  box-shadow: 0 6px 20px rgba(91, 124, 250, 0.45);
-}
-.logo-text {
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 1px;
-}
-.brand-headline {
-  font-size: 44px;
-  line-height: 1.3;
-  font-weight: 700;
-  letter-spacing: 1px;
-  margin-bottom: 18px;
-}
-.highlight {
-  background: linear-gradient(90deg, #7d9bff, #b3c4ff);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-.brand-desc {
-  color: #a6b0d0;
-  font-size: 15px;
-  line-height: 1.9;
-  margin-bottom: 36px;
-}
-.brand-features {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  font-size: 14px;
-  color: #c6cdea;
-}
-.brand-features li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.feat-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #7d9bff;
-  box-shadow: 0 0 8px rgba(125, 155, 255, 0.8);
-  flex: none;
-}
-.brand-foot {
-  margin-top: 48px;
-  font-size: 12px;
-  color: #6c78a0;
-  letter-spacing: 0.5px;
+  padding: clamp(28px, 5vw, 78px);
 }
 
-/* ---- 登录卡 ---- */
-.form-side {
-  display: flex;
-  justify-content: center;
-}
-.login-card {
-  width: 100%;
-  max-width: 400px;
-  padding: 40px 36px 32px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
-}
-.card-title {
-  font-size: 24px;
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-.card-sub {
-  color: #a6b0d0;
-  font-size: 13px;
-  margin-bottom: 28px;
-}
-.input-icon {
-  color: #8a94b8;
-}
-.login-btn {
-  margin-top: 8px;
-  height: 46px;
-  font-size: 15px;
-  letter-spacing: 6px;
-  font-weight: 600;
-}
+.login-card { width: min(100%, 420px); text-align: center; }
+.login-logo { display: block; width: clamp(128px, 13vw, 185px); height: auto; margin: 0 auto 30px; }
+.login-card h1 { font-size: clamp(25px, 2.65vw, 42px); line-height: 1.25; font-weight: 750; }
+.login-subtitle { margin: 12px 0 34px; color: #53657e; font-size: 15px; }
 
-.hint-block {
-  margin-top: 26px;
-  padding: 12px 14px;
-  border-radius: 8px;
-  border: 1px dashed rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.04);
-  color: #8a94b8;
-  font-size: 12px;
-  line-height: 1.7;
-}
+.login-form { display: grid; gap: 16px; text-align: start; }
+.login-form :deep(.n-input) { --n-height: 48px !important; --n-padding-left: 14px !important; --n-placeholder-color: #687a91 !important; }
+.login-form :deep(.n-input__prefix) { margin-right: 10px; }
+.login-form :deep(.input-icon) { color: #5d718e; font-size: 19px; }
+.login-btn { margin-top: 5px; height: 48px; font-size: 16px; font-weight: 650; }
+.login-help { margin-top: 22px; color: #566881; font-size: 12px; line-height: 1.65; }
 
-/* 窄屏适配 */
-@media (max-width: 900px) {
-  .login-panel {
-    grid-template-columns: 1fr;
-    padding: 24px;
-    gap: 24px;
+@media (max-width: 760px) {
+  .login-page { grid-template-columns: 1fr; grid-template-rows: auto auto; align-content: center; }
+  .login-content { grid-column: 1; grid-row: 1; padding: 32px 22px 20px; }
+  .login-card { max-width: 390px; }
+  .login-logo { margin-bottom: 18px; }
+  .login-subtitle { margin-bottom: 24px; }
+  .login-visual {
+    position: relative;
+    grid-row: 2;
+    width: 100%;
+    min-height: 145px;
+    background: linear-gradient(180deg, #fff, #eaf3fd 36%, #dceafb);
+    border-radius: 45% 45% 0 0 / 10% 10% 0 0;
   }
-  .brand-side {
-    display: none;
-  }
-  .form-side {
-    align-items: center;
-    min-height: 100vh;
-  }
+  .visual-backdrop { display: none; }
+  .sorter-illustration { width: min(88%, 425px); max-height: 31dvh; margin: 0 auto; }
 }
 </style>

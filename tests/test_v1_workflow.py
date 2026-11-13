@@ -52,7 +52,7 @@ def test_workflow_with_real_docx(monkeypatch):
         assert initial.status_code == 200, initial.text
         info = initial.json()
         version_id = info["active_version_id"]
-        assert info["extractor_version"] == "rules-v1"
+        assert info["extractor_version"] == "rules-v3"
         assert "受限内容" not in initial.text
         assert client.get(base, headers=other).status_code == 404
         assert client.get(base, headers=admin).status_code == 403
@@ -78,6 +78,30 @@ def test_workflow_with_real_docx(monkeypatch):
         new_version = fixed.json()["version_id"]
         assert version_id != new_version
         assert client.post(base + "/corrections", headers=hr, json=correction).status_code == 409
+        ext = next(item for item in info["issues"] if item["field_key"] == "extension")
+        extended = client.post(base+"/corrections",headers=hr,json={
+            "version_id":new_version,"record_no":ext["record_no"],"field_key":"extension",
+            "action":"correct","value":"维护开源工具","reason":"已核实扩展字段",
+        })
+        assert extended.status_code == 200, extended.text
+        monkeypatch.setattr("app.api.hr.schedule_parse", lambda version: process_resume.run(version))
+        retry = client.post(base + "/reparse", headers=hr)
+        assert retry.status_code == 202, retry.text
+        reparsed = retry.json()["version_id"]
+        current = client.get(base,headers=hr).json()
+        assert current["active_version_id"] == reparsed
+        assert any(e["field_key"]=="education.degree_level" and e["text"]=="硕士"
+                   and e["extraction_method"]=="manual" for e in current["evidence"])
+        assert any(field["value"]=="维护开源工具" for field in current["reviewed_extensions"])
+        with owner_engine.connect() as conn:
+            assert conn.execute(text("""
+                SELECT degree_level FROM resume_education WHERE version_id=:v AND record_no=:r
+            """), {"v":reparsed,"r":issue["record_no"]}).scalar_one() == "master"
+            assert conn.execute(text("""
+                SELECT version_id FROM application_field_review
+                WHERE application_id=:a AND field_key='education.degree_level'
+            """), {"a":application_id}).scalar_one() == new_version
+        new_version = reparsed
         first_round = info["rounds"][0]["id"]
         stage = client.put(base + "/stage", headers=hr, json={
             "code":"interview","round_id":first_round,"workflow_version":info["workflow_version"],

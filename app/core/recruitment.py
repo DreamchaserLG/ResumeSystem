@@ -8,8 +8,8 @@ from sqlalchemy import text
 from app.core.extraction import norm
 
 DEFAULT_ROUNDS = ("一面", "二面", "终面")
-FIXED_LABELS = {"review": "待审核", "rejected": "淘汰", "hired": "录取"}
-StageCode = Literal["review", "interview", "rejected", "hired"]
+FIXED_LABELS = {"review": "待审核", "progress": "推进中", "rejected": "淘汰", "hired": "录取"}
+StageCode = Literal["review", "progress", "interview", "rejected", "hired"]
 
 
 class RoundInput(BaseModel):
@@ -38,6 +38,8 @@ def save_rounds(connection, job_id, submitted):
         key = norm(name)
         if not key or key in names:
             raise HTTPException(422, "面试轮次名称不能为空、重复或与固定状态同名")
+        if key == "终面" and len(normalized) != len(submitted) - 1:
+            raise HTTPException(422, "终面必须排在最后一轮")
         names.add(key)
         if item.id is not None:
             if item.id not in old or item.id in used:

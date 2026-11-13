@@ -8,16 +8,18 @@ export const jobStatusOptions = [
 ] as const
 export const jobStatusLabel = (value: string) => jobStatusOptions.find(option => option.value === value)?.label ?? value
 export interface InterviewRound { id: number; name: string; position: number }
-export type StageCode = 'review' | 'interview' | 'rejected' | 'hired'
+export type StageCode = 'review' | 'progress' | 'interview' | 'rejected' | 'hired'
 export interface Stage { code: StageCode; label: string; round_id: number | null }
-export interface Job { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[] }
+export interface Job { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; planned_headcount: number | null; target_date: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[] }
 export type TransferJob = Pick<Job, 'id' | 'title' | 'department_id' | 'department_name'>
 export const stagesFor = (rounds: InterviewRound[] = []): Stage[] => [
   { code: 'review', label: '待审核', round_id: null },
+  { code: 'progress', label: '推进中', round_id: null },
   ...rounds.map(r => ({ code: 'interview' as const, label: r.name, round_id: r.id })),
   { code: 'hired', label: '录取', round_id: null },
   { code: 'rejected', label: '淘汰', round_id: null },
 ]
+export const stageDisplay = (stage: Stage) => stage.code === 'interview' ? '推进中 · ' + stage.label : stage.label
 export const stageKey = (stage: Stage) => stage.round_id ? 'interview:' + stage.round_id : stage.code
 export interface Application {
   id: number; job_id: number; job_title: string; name: string | null; status: string
@@ -33,8 +35,13 @@ export interface Issue {
   record_no: number; field_key: string; reason: string; span_no: number | null
   label: string; evidence: string | null; locator: Evidence['locator'] | null; ocr_confidence: number | null
 }
+export const schoolTagLabels: Record<string,string> = {
+  is_985:'985', is_211:'211', is_double_first_class:'双一流', study_abroad:'留学', qs_top100:'QS 前 100',
+}
 export interface Detail extends Application {
+  education: { record_no:number; school:string; degree:string | null; tags:string[]; qs_rank:number | null; qs_edition:number | null }[]
   evidence: Evidence[]; issues: Issue[]; has_preview: boolean
+  reviewed_extensions: { record_no:number; raw_label:string; value:string }[]
   stage: Stage; rounds: InterviewRound[]; workflow_version: number
 }
 export interface Options { departments: Department[]; hr_department_ids: number[]; skills: string[]; school_tags: { job_id: number; tag_code: string }[] }
@@ -63,11 +70,11 @@ export function locationText(loc: Evidence['locator'] | null) {
 export const loadJobs = () => api.get<{ items: Job[] }>('/jobs').then(r => r.items)
 
 export interface ResumeTag {
-  id: string; type: 'degree' | 'school' | 'experience' | 'domain' | 'skill'; value: string; filterable: boolean
+  id: string; type: 'degree' | 'school' | 'experience' | 'domain' | 'capability' | 'language'; value: string; filterable: boolean
 }
 export interface ResumeCard {
   id: number; version_id: number | null; job_id: number; job_title: string; name: string | null
   target_role: string | null; gender: string | null; city: string | null; address: string | null; phone: string | null
-  status: string; stage: Stage; parse_status: string; page_count: number; has_avatar: boolean; tags: ResumeTag[]
+  status: string; stage: Stage; workflow_version: number; parse_status: string; page_count: number; has_avatar: boolean; tags: ResumeTag[]
 }
-export interface ResumeCardPage { items: ResumeCard[]; total: number; page: number; size: number }
+export interface ResumeCardPage { items: ResumeCard[]; total: number; page: number; size: number; school_filters: boolean }

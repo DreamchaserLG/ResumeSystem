@@ -4,9 +4,20 @@ import { api } from '@/api/client'
 import type { ResumeCard } from '@/api/hr'
 
 const props = defineProps<{ resume: ResumeCard }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; pageRatio: [ratio: number] }>()
 const current = ref(1), target = ref(1)
 const active = ref(''), nextImage = ref(''), error = ref('')
+const frontRatio = ref(Math.SQRT1_2), backRatio = ref(Math.SQRT1_2)
+function readRatio(event: Event, back = false) {
+  const image = event.currentTarget as HTMLImageElement
+  if (!image.naturalHeight) return
+  const ratio = image.naturalWidth / image.naturalHeight
+  if (back) backRatio.value = ratio
+  else {
+    frontRatio.value = ratio
+    emit('pageRatio', ratio)
+  }
+}
 const turning = ref(false), backwards = ref(false), loading = ref(false)
 const images = new Map<number, string>()
 let generation = 0
@@ -46,6 +57,8 @@ function finish() {
   if (!nextImage.value) return
   if (timer) clearTimeout(timer)
   active.value = nextImage.value
+  frontRatio.value = backRatio.value
+  emit('pageRatio', frontRatio.value)
   current.value = target.value
   turning.value = false
   nextImage.value = ''
@@ -59,6 +72,7 @@ async function flip(page: number) {
     if (!url || epoch !== generation) return
     target.value = page
     backwards.value = page < current.value
+    backRatio.value = frontRatio.value
     nextImage.value = url
     if (reduced()) finish()
     else {
@@ -82,8 +96,8 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
       <button v-if="active" type="button" class="paper" :class="{ turning, backwards }"
         :disabled="count < 2 || loading || turning" :aria-label="count > 1 ? '翻到下一页' : '简历第一页'" @click="turnPage">
         <span class="paper-rotation" @animationend.self="finish">
-          <img class="paper-face front" :src="active" :alt="'简历第 ' + current + ' 页'">
-          <img v-if="nextImage" class="paper-face back" :src="nextImage" alt="">
+          <img class="paper-face front" :style="{ '--face-ratio': frontRatio }" :src="active" @load="readRatio($event)" :alt="'简历第 ' + current + ' 页'">
+          <img v-if="nextImage" class="paper-face back" :style="{ '--face-ratio': backRatio }" :src="nextImage" alt="" @load="readRatio($event, true)">
         </span>
       </button>
       <p v-else class="reader-empty" role="status">{{ loading ? '正在载入简历…' : error || (resume.parse_status === 'parsing' ? '简历解析中' : '暂未生成预览，可在申请详情重新解析。') }}</p>
@@ -98,7 +112,7 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
 </template>
 
 <style scoped>
-.resume-reader { display:grid; grid-template-rows:auto minmax(0,1fr) auto; min-width:0; min-height:0; background:#edf1f8; border:1px solid #dde5f1; border-radius:20px; overflow:hidden; box-shadow:0 12px 30px #162d5b0f; }
+.resume-reader { display:grid; grid-template-rows:auto minmax(0,1fr) auto auto; min-width:0; min-height:0; background:#edf1f8; border:1px solid #dde5f1; border-radius:20px; overflow:hidden; box-shadow:0 12px 30px #162d5b0f; }
 header, footer { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 15px; }
 header { background:#fff; border-bottom:1px solid #e4ebf5; }
 header h2 { margin:1px 0 0; font-size:16px; }
@@ -106,17 +120,18 @@ header h2 { margin:1px 0 0; font-size:16px; }
 .reader-actions { display:flex; align-items:center; gap:12px; white-space:nowrap; font-size:13px; }
 .reader-close { border:none; border-radius:9px; width:33px; height:33px; font-size:22px; background:#f0f3fa; color:#334567; cursor:pointer; }
 .reader-body { display:grid; place-items:center; min-height:0; padding:12px; overflow:hidden; }
-.paper { border:0; background:none; color:inherit; padding:0; width:100%; height:100%; min-height:0; perspective:1700px; cursor:pointer; }
+.paper { border:0; background:none; color:inherit; padding:0; width:100%; height:100%; min-height:0; min-width:0; container-type:size; perspective:1700px; cursor:pointer; }
 .paper:disabled { cursor:default; }
 .paper-rotation { position:relative; display:block; width:100%; height:100%; transform-style:preserve-3d; }
 .paper.turning .paper-rotation { animation:page-next .48s cubic-bezier(.24,.7,.38,1) forwards; }
 .paper.turning.backwards .paper-rotation { animation-name:page-prev; }
-.paper-face { position:absolute; inset:0; margin:auto; max-width:100%; max-height:100%; display:block; object-fit:contain; border-radius:9px; box-shadow:0 7px 22px #1d34582c; backface-visibility:hidden; background:white; }
+.paper-face { position:absolute; inset:0; margin:auto; width:min(100cqw, calc(100cqh * var(--face-ratio))); height:auto; aspect-ratio:var(--face-ratio); display:block; object-fit:contain; border-radius:9px; box-shadow:0 7px 22px #1d34582c; backface-visibility:hidden; background:white; }
 .paper-face.back { transform:rotateY(180deg); }
 .reader-empty,.reader-error { color:#64748b; margin:0 15px; text-align:center; font-size:13px; }
 .reader-error { color:#a02626; }
 footer { padding-top:4px; font-size:13px; color:#475569; }
 footer small { color:#64748b; }
+@media(max-width:540px) { footer small { display:none; } }
 @keyframes page-next { to { transform:rotateY(-180deg); } }
 @keyframes page-prev { to { transform:rotateY(180deg); } }
 @media(prefers-reduced-motion:reduce) { .paper.turning .paper-rotation { animation-duration:.01ms; } }

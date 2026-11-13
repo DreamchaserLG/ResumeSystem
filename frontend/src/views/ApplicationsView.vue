@@ -37,6 +37,8 @@ const busy = ref(false), loading = ref(false)
 const page = ref(1), total = ref(0)
 const mode = ref('auto'), size = ref(6), customSize = ref(6)
 const selected = ref<ResumeCard>()
+const paperRatio = ref(Math.SQRT1_2)
+watch(() => selected.value?.id, () => { paperRatio.value = Math.SQRT1_2 })
 const cardViewport = ref<HTMLElement>()
 const portrait = ref<ResumeCard>(), modalClose = ref<HTMLButtonElement>()
 const avatars = ref<Record<string,string>>({})
@@ -210,7 +212,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="recruit-workspace resume-workspace" :class="{ split: selected }">
+  <main class="resume-workspace">
+    <div class="resume-layout" :class="{ split: selected }" :style="{ '--paper-ratio': paperRatio }">
+      <div class="resume-list">
     <header class="workspace-heading">
       <div><span class="workspace-kicker">招聘工作台 / 候选人</span><h1>简历管理</h1><p>按岗位、经历和标签查找候选人。</p></div>
       <div class="heading-actions"><button class="rs-button" type="button" @click="load()">刷新列表</button>
@@ -218,14 +222,14 @@ onBeforeUnmount(() => {
     </header>
     <p v-if="error" class="workspace-notice danger" role="alert">{{ error }}</p>
     <p v-if="message" class="workspace-notice" role="status">{{ message }}</p>
-    <form v-if="showImport" class="workspace-surface import-panel" @submit.prevent="upload">
+    <form v-if="showImport" class="import-panel" @submit.prevent="upload">
       <div class="format-tabs" aria-label="导入方式"><button v-for="(item,key) in formats" :key="key" type="button" :class="{ active: format === key }" :aria-pressed="format === key" @click="switchFormat(key)">{{ item.title }}</button></div>
       <label>招聘岗位<select v-model="jobId" required><option value="">选择岗位</option><option v-for="job in jobs.filter(j => j.status === 'open' && j.manageable)" :key="job.id" :value="job.id">{{ job.title }}</option></select></label>
       <label class="file-label">{{ formats[format].title }} 文件<input ref="input" type="file" :accept="formats[format].accept" required @change="file = ($event.target as HTMLInputElement).files?.[0]"></label>
       <label>关联申请（可选）<input v-model="previous" type="number" min="1" placeholder="已有申请编号"></label>
       <button class="rs-button primary" type="submit" :disabled="busy">{{ busy ? '上传中…' : '确认导入' }}</button>
     </form>
-    <form class="workspace-surface filter-bar" @submit.prevent="search">
+    <form class="filter-bar" @submit.prevent="search">
       <label class="keyword"><span aria-hidden="true">⌕</span><input v-model="query" aria-label="搜索简历" placeholder="搜索姓名、岗位或经历关键词"></label>
       <button class="rs-button primary" type="submit">搜索</button>
       <select v-model="filterJob" aria-label="筛选岗位" @change="changeJob"><option value="">全部岗位</option><option v-for="job in jobs" :key="job.id" :value="job.id">{{ job.title }}</option></select>
@@ -250,7 +254,7 @@ onBeforeUnmount(() => {
             <div class="candidate-main">
               <div class="candidate-title">
                 <button type="button" class="candidate-name" @click.stop="openCard(row)">{{ row.name || '申请 #' + row.id }}</button>
-                <span class="workspace-chip" :class="row.stage.code">{{ row.stage.label }}</span>
+                <span class="candidate-status" :class="row.stage.code">{{ row.stage.label }}</span>
               </div>
               <dl class="candidate-facts">
                 <div><dt>求职岗位</dt><dd :title="row.target_role || row.job_title">{{ row.target_role || row.job_title }}</dd></div>
@@ -274,7 +278,6 @@ onBeforeUnmount(() => {
           </article>
         </div>
       </div>
-      <ResumeBook v-if="selected" :resume="selected" @close="closeBook"/>
     </div>
     <footer class="page-footer">
       <span aria-live="polite">共 <strong>{{ total }}</strong> 份 · 本页 {{ visibleCount }} 份 / {{ size }} 位</span>
@@ -284,6 +287,9 @@ onBeforeUnmount(() => {
         <span>{{ page }} / {{ maxPage }}</span>
         <button class="rs-button" type="button" aria-label="下一页简历" :disabled="page >= maxPage || loading" @click="changePage(page + 1)">›</button></div>
     </footer>
+      </div>
+      <ResumeBook v-if="selected" :resume="selected" @close="closeBook" @page-ratio="paperRatio = $event"/>
+    </div>
     <Teleport to="body">
       <div v-if="portrait" class="portrait-overlay" role="presentation" @click.self="clearPortrait">
         <section class="portrait-dialog" role="dialog" aria-modal="true" aria-label="头像预览">
@@ -298,9 +304,23 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.resume-workspace { height:100%; min-height:0; display:flex; flex-direction:column; gap:12px; overflow:hidden; }
-.page-footer { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-.filter-bar,.import-panel { display:flex; align-items:flex-end; gap:9px; padding:9px 11px; }
+.resume-workspace { height:100%; min-height:0; min-width:0; container-type:size; background:#f3f6fb; }
+.resume-layout { display:grid; grid-template-columns:minmax(0,1fr); height:100%; min-height:0; }
+.resume-layout.split {
+  grid-template-columns:minmax(0,1fr) min(calc(100% - 320px), max(350px, calc((100cqh - 128px) * var(--paper-ratio) + 24px)));
+  gap:12px;
+}
+.resume-list { display:flex; flex-direction:column; gap:12px; padding:20px clamp(14px,2.3vw,34px) 12px; color:#162440; min-width:0; min-height:0; overflow:hidden; }
+.split .resume-list { padding-right:0; }
+.resume-layout > :deep(.resume-reader) { min-height:0; height:100%; border-radius:14px 0 0 14px; }
+
+.workspace-heading,.page-footer,.heading-actions { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.workspace-heading h1 { margin:2px 0 3px; font-size:30px; letter-spacing:-.025em; line-height:1.16; }
+.workspace-heading p { margin:0; color:#596982; font-size:13px; }
+.workspace-kicker { color:#5269a2; font-size:11px; letter-spacing:.08em; font-weight:750; }
+.workspace-notice { margin:0; color:#15574c; background:#e2f3ed; padding:7px 12px; border-radius:8px; font-size:13px; }
+.workspace-notice.danger { color:#9b2525; background:#fce9e9; }
+.filter-bar,.import-panel { display:flex; align-items:flex-end; gap:9px; border:1px solid #e0e7f2; background:#fff; border-radius:14px; padding:9px 11px; }
 .keyword { display:flex; align-items:center; flex:1; gap:7px; min-width:70px; color:#627798; font-size:21px; }
 .keyword input { border:0; outline:none; width:100%; min-width:0; font:inherit; font-size:14px; height:34px; color:#1f3355; }
 .keyword:focus-within { box-shadow:0 2px #6783d6; }
@@ -313,7 +333,6 @@ onBeforeUnmount(() => {
 .format-tabs button.active,.active-filter { color:#2648a0; background:#e3ebff; font-weight:700; }
 .active-filters { display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-size:12px; color:#536584; }
 .workspace-body { display:grid; grid-template-columns:minmax(0,1fr); flex:1; gap:14px; min-height:0; }
-.split .workspace-body { grid-template-columns:minmax(310px,.88fr) minmax(0,1.12fr); }
 .card-viewport { min-height:0; min-width:0; overflow:auto; scrollbar-gutter:stable; --row-height:110px; }
 .split .card-viewport { --row-height:128px; }
 .candidate-list { display:grid; gap:8px; }
@@ -324,8 +343,12 @@ onBeforeUnmount(() => {
 .candidate-avatar { width:54px; height:54px; display:grid; place-items:center; overflow:hidden; border:0; border-radius:15px; background:linear-gradient(145deg,#e6eeff,#d8e5fa); color:#36568e; font-weight:800; font-size:17px; cursor:zoom-in; }
 .candidate-avatar img { width:100%; height:100%; object-fit:cover; }
 .candidate-main { min-width:0; }
-.candidate-title { display:flex; align-items:center; gap:9px; }
+.candidate-title { display:flex; align-items:center; gap:9px; min-width:0; }
 .candidate-name { color:#172b4d; background:none; border:0; padding:0; font-size:17px; font-weight:800; cursor:pointer; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; max-width:100%; }
+.candidate-status { max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#495d78; font-size:10px; background:#eef2f7; border-radius:5px; padding:2px 6px; flex:none; }
+.candidate-status.interview { color:#3758a3; background:#edf2ff; }
+.candidate-status.rejected { color:#a23d42; background:#f9e8e9; }
+.candidate-status.hired { color:#20715c; background:#e6f6ef; }
 .candidate-facts { display:grid; grid-template-columns:minmax(105px,1.25fr) minmax(43px,.55fr) minmax(100px,.85fr) minmax(95px,1.2fr); gap:7px; margin:6px 0; font-size:12px; }
 .candidate-facts div { min-width:0; display:flex; gap:6px; }
 .candidate-facts dt { flex:none; color:#62718a; }
@@ -340,9 +363,8 @@ button.candidate-tag:hover,button.candidate-tag.is-selected { border-color:#7893
 .candidate-tag.domain { color:#226959; background:#e7f6ef; }
 .candidate-tag.experience { color:#6c489c; background:#f2ebfa; }
 .no-tags { color:#62718a; font-size:11px; }
-.card-links { display:grid; gap:7px; justify-items:end; }
-.details-link { font-size:12px; color:#3858a1; white-space:nowrap; text-decoration:none; }
-.details-link:hover { text-decoration:underline; }
+.card-links { display:grid; gap:5px; justify-items:end; }
+.details-link { font-size:12px; color:#3858a1; white-space:nowrap; }
 .split .candidate-row { grid-template-columns:43px minmax(0,1fr) auto; padding:9px 12px; gap:9px; }
 .split .candidate-avatar { width:42px; height:42px; border-radius:11px; }
 .split .candidate-facts { grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:3px 6px; }
@@ -359,12 +381,19 @@ button.candidate-tag:hover,button.candidate-tag.is-selected { border-color:#7893
 .portrait-placeholder { display:grid; place-items:center; background:linear-gradient(135deg,#dce8ff,#bcd1ef); color:#36568e; font-weight:800; font-size:clamp(70px,22vmin,200px); }
 .portrait-close { position:absolute; top:17px; right:17px; width:42px; height:42px; background:#fff; color:#15263e; border:0; border-radius:50%; font-size:25px; cursor:pointer; }
 .portrait-dialog p { margin:7px 0 0; font-weight:700; }
-@media(max-width:1140px) { .split .workspace-body { grid-template-columns:minmax(250px,.8fr) minmax(0,1.2fr); } .split .card-links { display:none; } .split .candidate-row { grid-template-columns:43px minmax(0,1fr); } }
-@media(max-width:820px) {
+@container (max-width: 1000px) {
+  .split .candidate-row { grid-template-columns:43px minmax(0,1fr); }
+  .split .card-links { display:none; }
+}
+@container (max-width: 710px) {
+  .resume-layout.split { position:relative; grid-template-columns:minmax(0,1fr); }
+  .split .resume-list { visibility:hidden; padding-right:clamp(14px,2.3vw,34px); }
+  .resume-layout.split > :deep(.resume-reader) { position:absolute; inset:0; border-radius:0; }
+  .workspace-heading p,.workspace-kicker { display:none; }
+  .workspace-heading h1 { font-size:23px; }
   .filter-bar { flex-wrap:wrap; }
-  .candidate-facts { grid-template-columns:1fr 1fr; gap:3px 6px; }
+  .candidate-facts { grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:3px 6px; }
   .card-viewport { --row-height:124px; }
-  .split .workspace-body { grid-template-columns:1fr; grid-template-rows:minmax(100px,.75fr) minmax(160px,1.25fr); }
   .candidate-row { gap:9px; }
 }
 @media(prefers-reduced-motion:reduce) { .candidate-row { transition:none; } }

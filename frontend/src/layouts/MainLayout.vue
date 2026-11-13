@@ -1,16 +1,14 @@
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NLayout,
   NLayoutSider,
   NLayoutHeader,
   NLayoutContent,
-  NMenu,
   NIcon,
   NAvatar,
   NDropdown,
-  type MenuOption,
 } from 'naive-ui'
 import {
   GridOutline,
@@ -26,60 +24,25 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const collapsed = ref(window.innerWidth < 760)
-const menuTheme = {
-  itemTextColor: '#c7d4ec', itemIconColor: '#b5c7e4',
-  itemTextColorHover: '#ffffff', itemIconColorHover: '#ffffff',
-  itemTextColorActive: '#ffffff', itemIconColorActive: '#ffffff',
-  itemTextColorActiveHover: '#ffffff', itemIconColorActiveHover: '#ffffff',
-  itemColorHover: '#263856', itemColorActive: '#344d79', itemColorActiveHover: '#405b89',
-}
-
-function icon(comp: any) {
-  return () => h(NIcon, null, { default: () => h(comp) })
-}
-
-const allMenus: MenuOption[] = [
-  {
-    label: '工作台',
-    key: 'dashboard',
-    icon: icon(GridOutline),
-  },
-  {
-    label: '简历管理',
-    key: 'applications',
-    icon: icon(DocumentsOutline),
-  },
-  {
-    label: '候选人检索',
-    key: 'search',
-    icon: icon(SearchOutline),
-  },
-  {
-    label: '复核队列',
-    key: 'review',
-    icon: icon(CreateOutline),
-  },
-  {
-    label: '岗位管理',
-    key: 'jobs',
-    icon: icon(BriefcaseOutline),
-  },
-  {
-    label: '审计日志',
-    key: 'audit',
-    icon: icon(ShieldCheckmarkOutline),
-  },
+const narrow = window.matchMedia('(max-width: 759px)')
+const collapsed = ref(narrow.matches)
+function onWidth(event: MediaQueryListEvent) { collapsed.value = event.matches }
+onMounted(() => narrow.addEventListener('change', onWidth))
+onUnmounted(() => narrow.removeEventListener('change', onWidth))
+const menuItems = [
+  { label: '工作台', key: 'dashboard', icon: GridOutline },
+  { label: '简历管理', key: 'applications', icon: DocumentsOutline },
+  { label: '候选人检索', key: 'search', icon: SearchOutline },
+  { label: '复核队列', key: 'review', icon: CreateOutline },
+  { label: '岗位管理', key: 'jobs', icon: BriefcaseOutline },
+  { label: '审计日志', key: 'audit', icon: ShieldCheckmarkOutline },
+  { label: '系统设置', key: 'admin', icon: ShieldCheckmarkOutline },
 ]
+const menus = computed(() => menuItems.filter(item => (auth.isSuperAdmin
+  ? ['dashboard','jobs','audit','admin'] : ['dashboard','jobs','applications','search','review']).includes(item.key)))
+const activeMenu = computed(() => route.name === 'application-detail' ? 'applications' : route.name)
 
-allMenus.push({ label: '系统设置', key: 'admin', icon: icon(ShieldCheckmarkOutline) })
-const menus = computed(() => allMenus.filter(item => (auth.isSuperAdmin ? ['dashboard','jobs','audit','admin'] : ['dashboard','jobs','applications','search','review']).includes(String(item.key))))
-
-const userOptions = [{ label: '退出登录', key: 'logout', icon: icon(LogOutOutline) }]
-
-function onMenuSelect(key: string) {
-  router.push(`/${key}`)
-}
+const userOptions = [{ label: '退出登录', key: 'logout', icon: () => h(NIcon, null, { default: () => h(LogOutOutline) }) }]
 
 function onUserAction(key: string) {
   if (key === 'logout') {
@@ -91,7 +54,7 @@ function onUserAction(key: string) {
 </script>
 
 <template>
-  <NLayout has-sider style="height: 100vh">
+  <NLayout has-sider style="height: 100dvh">
     <!-- 侧边栏 -->
     <NLayoutSider
       bordered
@@ -101,7 +64,7 @@ function onUserAction(key: string) {
       :collapsed="collapsed"
       show-trigger
       @update:collapsed="(v: boolean) => (collapsed = v)"
-      class="sider"
+      class="sider" :class="{ collapsed }"
     >
       <div class="logo-bar">
         <div class="logo-mark">R</div>
@@ -109,16 +72,14 @@ function onUserAction(key: string) {
           <span v-if="!collapsed" class="logo-name">智能简历筛选</span>
         </transition>
       </div>
-      <NMenu
-        :value="route.name === 'application-detail' ? 'applications' : route.name as string"
-        :options="menus"
-        :collapsed="collapsed"
-        :theme-overrides="menuTheme"
-        :collapsed-width="68"
-        :collapsed-icon-size="20"
-        :indent="18"
-        @update:value="onMenuSelect"
-      />
+      <nav class="side-nav" aria-label="工作区导航">
+        <RouterLink v-for="item in menus" :key="item.key" :to="'/' + item.key" class="side-link"
+          :class="{ current: activeMenu === item.key }" :aria-current="activeMenu === item.key ? 'page' : undefined"
+          :aria-label="item.label" :title="collapsed ? item.label : undefined">
+          <component :is="item.icon" class="side-icon" aria-hidden="true"/>
+          <span v-if="!collapsed">{{ item.label }}</span>
+        </RouterLink>
+      </nav>
     </NLayoutSider>
 
     <!-- 主体 -->
@@ -166,6 +127,14 @@ function onUserAction(key: string) {
 .sider :deep(.n-layout-toggle-button) {
   background:#314b75; color:#fff; border:1px solid #59739f;
 }
+
+.side-nav { display:grid; gap:6px; padding:8px; }
+.side-link { display:flex; align-items:center; gap:9px; min-height:42px; padding:0 10px; border-radius:8px; color:#c7d4ec; text-decoration:none; font-size:14px; white-space:nowrap; }
+.side-link:hover { background:#263856; color:#fff; }
+.side-link.current { background:#344d79; color:#fff; }
+.side-link:focus-visible { outline:2px solid #a9c4f0; outline-offset:-2px; }
+.side-icon { width:20px; height:20px; flex:none; color:inherit; }
+.collapsed .side-link { justify-content:center; padding:0; }
 
 .logo-bar {
   height: var(--rs-header-height);
@@ -274,6 +243,7 @@ function onUserAction(key: string) {
 }
 
 .content {
+  height:calc(100dvh - var(--rs-header-height));
   background: var(--rs-bg);
 }
 </style>

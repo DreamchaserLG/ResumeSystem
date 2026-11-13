@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { BriefcaseOutline } from '@vicons/ionicons5'
 import { api } from '@/api/client'
 import { label, loadJobs, type Job, type Options } from '@/api/hr'
 import { useAuthStore } from '@/stores/auth'
@@ -14,10 +13,8 @@ const editor = ref<HTMLFormElement>()
 const error = ref('')
 const message = ref('')
 const busy = ref(false)
-const department = ref<number | ''>('')
-const departments = computed(() => [...new Map(jobs.value.map(j => [j.department_id,j.department_name])).entries()])
-const visible = computed(() => jobs.value.filter(j => !department.value || department.value === j.department_id))
-const count = computed(() => visible.value.reduce((sum, j) => sum+j.application_count,0))
+const statusFilter = ref('')
+const visible = computed(() => jobs.value.filter(j => !statusFilter.value || statusFilter.value === j.status))
 async function choose(job?: Job) {
   error.value = ''; message.value = ''
   edit.value = job?.id ?? null
@@ -55,14 +52,12 @@ async function submit() {
 </script>
 
 <template>
-  <main class="recruit-workspace rs-workspace jobs-page">
-    <header class="workspace-heading">
-      <div><span class="workspace-kicker">招聘工作台 / 岗位</span><h1>岗位管理</h1><p>配置面试轮次，查看每个岗位关联的简历。</p></div>
-      <div class="heading-actions"><button v-if="!auth.isSuperAdmin" class="rs-button primary" @click="choose()">＋ 新建岗位</button></div>
-    </header>
-    <p v-if="error" class="workspace-notice danger" role="alert">{{ error }}</p>
-    <p v-if="message" class="workspace-notice" role="status">{{ message }}</p>
-    <form v-if="!auth.isSuperAdmin && edit !== undefined" ref="editor" class="workspace-surface rs-panel job-editor" @submit.prevent="submit">
+  <main class="rs-page rs-workspace jobs-page">
+    <header class="rs-heading"><div><h1>岗位管理</h1><p>查看岗位与招聘状态</p></div>
+      <button v-if="!auth.isSuperAdmin" class="rs-button" @click="choose()">新建岗位</button></header>
+    <p v-if="error" class="rs-error" role="alert">{{ error }}</p>
+    <p v-if="message" class="rs-message" role="status">{{ message }}</p>
+    <form v-if="!auth.isSuperAdmin && edit !== undefined" ref="editor" class="rs-card rs-panel job-editor" @submit.prevent="submit">
       <h2>{{ edit ? '编辑岗位' : '新建岗位' }}</h2>
       <div class="rs-form">
         <label class="grow">岗位名称<input v-model="form.title" maxlength="120" required></label>
@@ -85,64 +80,43 @@ async function submit() {
       <div class="rs-actions"><button class="rs-button primary" :disabled="busy">{{ edit ? '保存修改' : '创建岗位' }}</button>
         <button class="rs-button" type="button" :disabled="busy" @click="edit = undefined; error = ''">取消</button></div>
     </form>
-    <section class="job-list" aria-label="岗位列表">
-      <div class="workspace-surface job-summary">
-        <label>部门 <select v-model="department" aria-label="筛选部门"><option value="">全部部门</option><option v-for="[id,name] in departments" :key="id" :value="id">{{ name }}</option></select></label>
-        <span>{{ visible.length }} 个岗位 · {{ count }} 份关联简历</span>
+    <section class="rs-card rs-panel" aria-label="岗位列表">
+      <div class="rs-form jobs-filter">
+        <label>招聘状态<select v-model="statusFilter" aria-label="筛选岗位状态">
+          <option value="">全部状态</option><option value="open">招聘中</option><option value="paused">暂停</option><option value="closed">关闭</option>
+        </select></label>
       </div>
-      <article v-for="job in visible" :key="job.id" class="workspace-surface job-row">
-        <div class="job-mark" aria-hidden="true"><BriefcaseOutline/></div>
-        <div class="job-content">
-          <div class="job-title"><h2>{{ job.title }}</h2><span class="workspace-chip" :class="job.status">{{ label(job.status) }}</span></div>
-          <p>{{ job.department_name }}</p>
-          <div class="job-rounds" aria-label="面试轮次">
-            <span v-for="round in job.rounds" :key="round.id" class="workspace-chip interview">{{ round.name }}</span>
-            <span v-if="!job.rounds.length" class="workspace-chip">无需面试</span>
-          </div>
-        </div>
-        <div class="job-actions">
-          <RouterLink v-if="!auth.isSuperAdmin" class="job-count" :to="{ name:'applications', query:{ job:job.id } }" :aria-label="'查看 ' + job.title + ' 的简历'">
-            <strong>{{ job.application_count }}</strong><span>份简历 ›</span>
-          </RouterLink>
-          <div v-else class="job-count"><strong>{{ job.application_count }}</strong><span>份简历</span></div>
-          <button v-if="!auth.isSuperAdmin && job.manageable" class="rs-button" @click="choose(job)">编辑岗位</button>
-        </div>
-      </article>
-      <p v-if="!visible.length" class="workspace-surface job-empty">暂无岗位。</p>
+      <table class="rs-table">
+        <thead><tr><th>岗位</th><th>部门</th><th>状态</th><th>描述</th><th>面试轮次</th><th>关联简历</th><th v-if="!auth.isSuperAdmin">操作</th></tr></thead>
+        <tbody>
+          <tr v-for="job in visible" :key="job.id">
+            <td>{{ job.title }}</td><td>{{ job.department_name }}</td><td><span class="rs-badge">{{ label(job.status) }}</span></td>
+            <td class="job-description">{{ job.jd || '—' }}</td>
+            <td>{{ job.rounds.map(round => round.name).join(' → ') || '无需面试' }}</td>
+            <td><RouterLink v-if="!auth.isSuperAdmin" :to="{ name:'applications', query:{ job:job.id } }" :aria-label="'查看 ' + job.title + ' 的简历'">{{ job.application_count }} 份</RouterLink>
+              <span v-else>{{ job.application_count }} 份</span></td>
+            <td v-if="!auth.isSuperAdmin"><button v-if="job.manageable" class="rs-button" @click="choose(job)">编辑</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-if="!visible.length" class="rs-empty">暂无符合条件的岗位。</p>
     </section>
   </main>
 </template>
 
 <style scoped>
-.jobs-page { gap:12px; align-content:start; }
+.jobs-page { align-content:start; }
 .job-editor { display:grid; gap:14px; }
 .job-editor h2 { margin:0; }
 .jd-field { display:grid; gap:5px; font-size:13px; color:var(--rs-text-secondary); }
-.job-editor textarea,.job-editor input,.job-summary select { border:1px solid #d9e2f1; border-radius:8px; padding:8px 10px; background:#fff; color:#263a5c; }
+.job-editor textarea,.round-editor input { border:1px solid var(--rs-border); border-radius:7px; padding:8px 10px; background:var(--rs-bg-card); color:var(--rs-text); font:inherit; }
 .job-editor textarea { resize:vertical; }
-.job-editor fieldset { min-width:0; border:1px solid #e0e7f2; border-radius:10px; padding:10px 14px 13px; }
+.job-editor fieldset { min-width:0; border:1px solid var(--rs-border); border-radius:8px; padding:10px 14px 13px; }
 .job-editor legend { font-weight:700; padding:0 5px; }
 .job-editor fieldset p { font-size:12px; margin-bottom:8px; }
 .round-editor { display:flex; align-items:center; gap:7px; margin-bottom:6px; }
-.round-editor span { width:20px; color:#526585; }
+.round-editor span { width:20px; color:var(--rs-text-secondary); }
 .round-editor input { flex:1; max-width:290px; min-width:72px; }
-.job-list { display:grid; gap:8px; min-width:0; }
-.job-summary { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding:9px 11px; color:#526585; font-size:13px; }
-.job-summary label { display:flex; align-items:center; gap:8px; }
-.job-row { display:grid; grid-template-columns:54px minmax(0,1fr) auto; align-items:center; gap:15px; padding:13px 15px; min-height:108px; border-radius:16px; box-shadow:0 2px 9px #1a345506; }
-.job-mark { width:54px; height:54px; display:grid; place-items:center; border-radius:15px; background:linear-gradient(145deg,#e6eeff,#d8e5fa); color:#36568e; }
-.job-mark svg { width:24px; height:24px; }
-.job-title,.job-rounds,.job-actions { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
-.job-title h2 { margin:0; font-size:17px; line-height:1.35; overflow-wrap:anywhere; }
-.job-content p { margin:5px 0 6px; font-size:13px; color:#596982; }
-.job-actions { justify-content:flex-end; gap:12px; }
-.job-count { display:flex; align-items:center; gap:6px; color:#3858a1; font-size:13px; text-decoration:none; white-space:nowrap; }
-.job-count strong { font-size:20px; }
-a.job-count:hover { text-decoration:underline; }
-.job-empty { padding:24px; text-align:center; color:#546884; }
-@media (max-width: 680px) {
-  .job-row { grid-template-columns:36px minmax(0,1fr); gap:9px; }
-  .job-mark { width:36px; height:36px; border-radius:10px; }
-  .job-actions { grid-column:2; justify-content:flex-start; }
-}
+.jobs-filter { margin-bottom:12px; }
+.job-description { max-width:30ch; overflow-wrap:anywhere; white-space:pre-line; }
 </style>

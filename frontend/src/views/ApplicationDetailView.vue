@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DocumentTextOutline } from '@vicons/ionicons5'
 import { api } from '@/api/client'
 import { label, locationText, stageKey, stagesFor, type Detail, type Issue, type TransferJob } from '@/api/hr'
 
@@ -126,28 +125,21 @@ async function showPreview() {
 </script>
 
 <template>
-  <main class="recruit-workspace rs-workspace application-detail">
-    <header class="workspace-heading">
-      <div><RouterLink class="workspace-kicker detail-back" :to="returnTo">‹ 返回简历列表</RouterLink>
-        <h1>{{ detail?.name || '申请 #' + id }}</h1><p v-if="detail">{{ detail.job_title }}</p></div>
-      <div class="heading-actions"><button class="rs-button" :disabled="busy" @click="load">刷新</button></div>
-    </header>
-    <p v-if="error" class="workspace-notice danger" role="alert">{{ error }}</p>
-    <p v-if="message" class="workspace-notice" role="status">{{ message }}</p>
+  <main class="rs-page rs-workspace application-detail">
+    <header class="rs-heading"><div><RouterLink class="inline" :to="returnTo">返回简历列表</RouterLink><h1>{{ detail?.name || '申请 #' + id }}</h1><p v-if="detail">{{ detail.job_title }}</p></div>
+      <button class="rs-button" :disabled="busy" @click="load">刷新</button></header>
+    <p v-if="error" class="rs-error" role="alert">{{ error }}</p><p v-if="message" class="rs-message" role="status">{{ message }}</p>
     <template v-if="detail">
-      <section class="workspace-surface stage-panel" aria-label="当前招聘状态">
-        <div class="stage-summary">
-          <div class="stage-mark" aria-hidden="true"><DocumentTextOutline/></div>
-          <div><p class="stage-caption">当前招聘状态</p><h2 class="workspace-chip stage-display" :class="detail.stage.code">{{ detail.stage.label }}</h2></div>
-        </div>
+      <section class="rs-card rs-panel stage-panel" aria-label="当前招聘状态">
+        <div><p class="stage-caption">当前招聘状态</p><h2 class="rs-badge stage-display" :class="detail.stage.code">{{ detail.stage.label }}</h2></div>
         <form class="rs-form" @submit.prevent="updateStage">
           <label>更新状态<select v-model="nextStage"><option v-for="item in available" :key="stageKey(item)" :value="stageKey(item)">{{ item.label }}</option></select></label>
           <button class="rs-button primary" :disabled="busy || nextStage === activeKey">保存</button>
         </form>
       </section>
-      <section class="workspace-surface rs-panel detail-actions">
+      <section class="rs-card rs-panel">
         <div class="detail-tools">
-          <button class="rs-button transfer-button" type="button" :aria-expanded="transferOpen" @click="toggleTransfer">调剂岗位</button>
+          <button class="rs-button" type="button" :aria-expanded="transferOpen" @click="toggleTransfer">调剂岗位</button>
           <button v-if="detail.has_preview && !preview" class="rs-button" @click="showPreview">查看脱敏预览</button>
           <button v-if="preview" class="rs-button" @click="hidePreview">收起预览</button>
           <button class="rs-button" :aria-expanded="reviewOpen" @click="reviewOpen = !reviewOpen; reviewOpen && loadEvidence()">字段复核</button>
@@ -161,7 +153,7 @@ async function showPreview() {
         </form>
         <img v-if="preview" class="rs-preview" :src="preview" alt="脱敏简历首页">
       </section>
-      <section v-if="reviewOpen" id="review" class="workspace-surface rs-panel">
+      <section v-if="reviewOpen" id="review" class="rs-card rs-panel">
         <h2>待复核字段</h2>
         <p v-if="!detail.issues.length" class="rs-empty">{{ fullLoaded ? '当前版本没有待复核字段。' : '正在加载。' }}</p>
         <table v-else class="rs-table"><thead><tr><th>字段</th><th>原因</th><th>原文与位置</th><th>操作</th></tr></thead><tbody>
@@ -175,14 +167,14 @@ async function showPreview() {
           <button class="rs-button primary" :disabled="busy">提交复核</button>
         </form>
       </section>
-      <section v-if="evidenceOpen" class="workspace-surface rs-panel">
+      <section v-if="evidenceOpen" class="rs-card rs-panel">
         <h2>字段与原文证据</h2>
         <p v-if="!detail.evidence.length" class="rs-muted">{{ fullLoaded ? '当前版本暂无可查看的字段证据。' : '正在加载。' }}</p>
         <div class="rs-evidence"><article v-for="entry in detail.evidence" :id="'span-' + entry.span_no" :key="entry.record_no + ':' + entry.field_key + ':' + entry.span_no">
           <strong>{{ label(entry.field_key) }}</strong> · {{ locationText(entry.locator) }}<p>{{ entry.text }}</p>
         </article></div>
       </section>
-      <details class="workspace-surface rs-panel">
+      <details class="rs-card rs-panel">
         <summary>更多操作</summary>
         <div class="detail-tools detail-form">
           <button class="rs-button" :disabled="busy || detail.parse_status === 'parsing'" @click="operation(() => api.post(base + '/reparse'), '已提交重新解析。')">重新解析</button>
@@ -198,25 +190,16 @@ async function showPreview() {
 </template>
 
 <style scoped>
-.application-detail { gap:12px; align-content:start; }
-.detail-back { text-decoration:none; }
-.detail-back:hover { text-decoration:underline; }
-.stage-panel { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; min-height:110px; padding:14px 15px; border-radius:16px; box-shadow:0 2px 9px #1a345506; }
-.stage-summary { display:flex; align-items:center; gap:15px; min-width:0; }
-.stage-mark { flex:none; width:54px; height:54px; display:grid; place-items:center; border-radius:15px; background:linear-gradient(145deg,#e6eeff,#d8e5fa); color:#36568e; }
-.stage-mark svg { width:24px; height:24px; }
-.stage-caption { color:#596982; font-size:13px; margin:0 0 6px; }
-.stage-display { margin:0; font-size:15px; padding:5px 9px; white-space:normal; overflow-wrap:anywhere; }
+.application-detail { align-content:start; }
+.stage-panel { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+.stage-caption { color:var(--rs-text-secondary); font-size:13px; margin:0 0 6px; }
+.stage-panel .stage-display { display:inline-block; margin:0; padding:4px 10px; white-space:normal; overflow-wrap:anywhere; }
+.stage-display.hired { color:#20715c; background:#e6f6ef; }
+.stage-display.rejected { color:#a23d42; background:#f9e8e9; }
 .stage-panel select,.detail-form select { max-width: min(100%, 420px); }
 .detail-tools { display:flex; flex-wrap:wrap; gap:8px; }
-.detail-actions { padding:12px 15px; }
-.transfer-button { color:#3858a1; background:#f9fbff; }
 .detail-form { margin-top:14px; }
 .transfer-hint { flex-basis:100%; margin:0; font-size:12px; }
-.rs-preview { display:block; margin:14px auto 0; border-radius:9px; }
-.application-detail summary { cursor:pointer; font-size:14px; color:#495d78; }
-@media (max-width:680px) {
-  .stage-panel { padding:12px; }
-  .stage-mark { width:42px; height:42px; border-radius:11px; }
-}
+.rs-preview { display:block; margin:14px auto 0; }
+.application-detail summary { cursor:pointer; }
 </style>

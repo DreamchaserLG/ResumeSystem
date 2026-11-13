@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/client'
-import { label, loadJobs, type Job, type Options } from '@/api/hr'
+import { jobStatusLabel, jobStatusOptions, loadJobs, type Job, type Options } from '@/api/hr'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 const jobs = ref<Job[]>([])
 const options = ref<Options>()
 const edit = ref<number | null>()
-const form = reactive({ title: '', jd: '', status: 'open', department_id: 0, rounds: [] as { id?: number; name: string }[] })
+const form = reactive({ title: '', jd: '', status: 'paused', department_id: 0, rounds: [] as { id?: number; name: string }[] })
 const editor = ref<HTMLFormElement>()
 const error = ref('')
 const message = ref('')
@@ -19,7 +19,7 @@ async function choose(job?: Job) {
   error.value = ''; message.value = ''
   edit.value = job?.id ?? null
   Object.assign(form, {
-    title: job?.title ?? '', jd: job?.jd ?? '', status: job?.status ?? 'open',
+    title: job?.title ?? '', jd: job?.jd ?? '', status: job?.status ?? 'paused',
     department_id: job?.department_id ?? options.value?.hr_department_ids[0] ?? 0,
     rounds: job ? job.rounds.map(r => ({ id:r.id, name:r.name })) : ['一面','二面','终面'].map(name => ({ name })),
   })
@@ -62,7 +62,7 @@ async function submit() {
       <div class="rs-form">
         <label class="grow">岗位名称<input v-model="form.title" maxlength="120" required></label>
         <label>所属部门<select v-model="form.department_id" :disabled="edit !== null" required><option v-for="d in options?.departments.filter(x => options?.hr_department_ids.includes(x.id))" :key="d.id" :value="d.id">{{ d.name }}</option></select></label>
-        <label>招聘状态<select v-model="form.status"><option value="open">招聘中</option><option value="paused">暂停</option><option value="closed">关闭</option></select></label>
+        <label>招聘状态<select v-model="form.status"><option v-for="status in jobStatusOptions" :key="status.value" :value="status.value">{{ status.label }}</option></select></label>
       </div>
       <label class="jd-field">职位描述<textarea v-model="form.jd" maxlength="4000" rows="2"></textarea></label>
       <fieldset>
@@ -83,14 +83,14 @@ async function submit() {
     <section class="rs-card rs-panel" aria-label="岗位列表">
       <div class="rs-form jobs-filter">
         <label>招聘状态<select v-model="statusFilter" aria-label="筛选岗位状态">
-          <option value="">全部状态</option><option value="open">招聘中</option><option value="paused">暂停</option><option value="closed">关闭</option>
+          <option value="">全部状态</option><option v-for="status in jobStatusOptions" :key="status.value" :value="status.value">{{ status.label }}</option>
         </select></label>
       </div>
       <table class="rs-table">
         <thead><tr><th>岗位</th><th>部门</th><th>状态</th><th>描述</th><th>面试轮次</th><th>关联简历</th><th v-if="!auth.isSuperAdmin">操作</th></tr></thead>
         <tbody>
           <tr v-for="job in visible" :key="job.id">
-            <td>{{ job.title }}</td><td>{{ job.department_name }}</td><td><span class="rs-badge">{{ label(job.status) }}</span></td>
+            <td>{{ job.title }}</td><td>{{ job.department_name }}</td><td><span class="rs-badge job-status" :class="job.status">{{ jobStatusLabel(job.status) }}</span></td>
             <td class="job-description">{{ job.jd || '—' }}</td>
             <td>{{ job.rounds.map(round => round.name).join(' → ') || '无需面试' }}</td>
             <td><RouterLink v-if="!auth.isSuperAdmin" :to="{ name:'applications', query:{ job:job.id } }" :aria-label="'查看 ' + job.title + ' 的简历'">{{ job.application_count }} 份</RouterLink>
@@ -117,6 +117,11 @@ async function submit() {
 .round-editor { display:flex; align-items:center; gap:7px; margin-bottom:6px; }
 .round-editor span { width:20px; color:var(--rs-text-secondary); }
 .round-editor input { flex:1; max-width:290px; min-width:72px; }
+.job-status { display:inline-flex; align-items:center; gap:5px; font-weight:600; }
+.job-status::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+.job-status.paused { color:#854d0e; background:#fef3c7; }
+.job-status.open { color:#166534; background:#dcfce7; }
+.job-status.closed { color:#475569; background:#e2e8f0; }
 .jobs-filter { margin-bottom:12px; }
 .job-description { max-width:30ch; overflow-wrap:anywhere; white-space:pre-line; }
 </style>

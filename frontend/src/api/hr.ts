@@ -1,6 +1,12 @@
 import { api } from './client'
 
 export interface Department { id: number; name: string }
+export const jobStatusOptions = [
+  { value: 'paused', label: '未开始' },
+  { value: 'open', label: '进行中' },
+  { value: 'closed', label: '已结束' },
+] as const
+export const jobStatusLabel = (value: string) => jobStatusOptions.find(option => option.value === value)?.label ?? value
 export interface InterviewRound { id: number; name: string; position: number }
 export type StageCode = 'review' | 'interview' | 'rejected' | 'hired'
 export interface Stage { code: StageCode; label: string; round_id: number | null }

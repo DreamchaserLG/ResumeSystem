@@ -1,10 +1,22 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { ExpandOutline, ContractOutline } from '@vicons/ionicons5'
 import { api } from '@/api/client'
 import type { ResumeCard } from '@/api/hr'
 
 const props = defineProps<{ resume: ResumeCard }>()
-const emit = defineEmits<{ close: []; pageRatio: [ratio: number] }>()
+const emit = defineEmits<{ close: []; pageRatio: [ratio: number]; fullscreenChange: [active: boolean] }>()
+const fullscreen = ref(false)
+const reader = ref<HTMLElement>()
+const fullscreenButton = ref<HTMLButtonElement>()
+function setFullscreen(value: boolean) {
+  fullscreen.value = value
+  emit('fullscreenChange', value)
+}
+watch(fullscreen, (value) => {
+  if (value && reader.value instanceof HTMLDialogElement) reader.value.showModal()
+  fullscreenButton.value?.focus()
+}, { flush: 'post' })
 const current = ref(1), target = ref(1)
 const active = ref(''), nextImage = ref(''), error = ref('')
 const frontRatio = ref(Math.SQRT1_2), backRatio = ref(Math.SQRT1_2)
@@ -86,10 +98,15 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
 </script>
 
 <template>
-  <aside class="resume-reader" aria-label="简历预览">
+  <component :is="fullscreen ? 'dialog' : 'aside'" ref="reader"
+    class="resume-reader" :class="{ 'resume-fullscreen': fullscreen }" aria-label="简历预览" @cancel.prevent="setFullscreen(false)">
     <header>
       <div><span class="reader-kicker">简历预览</span><h2>{{ resume.name || '申请 #' + resume.id }}</h2></div>
       <div class="reader-actions"><RouterLink :to="'/applications/' + resume.id">申请详情</RouterLink>
+        <button ref="fullscreenButton" type="button" class="reader-close reader-expand" :aria-label="fullscreen ? '退出全屏' : '全屏预览'"
+          :title="fullscreen ? '退出全屏' : '全屏预览'" @click="setFullscreen(!fullscreen)">
+          <ContractOutline v-if="fullscreen" aria-hidden="true"/><ExpandOutline v-else aria-hidden="true"/>
+        </button>
         <button type="button" aria-label="关闭预览" class="reader-close" @click="emit('close')">×</button></div>
     </header>
     <div class="reader-body">
@@ -108,14 +125,25 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
       <span aria-live="polite">{{ current }} / {{ count }}<small v-if="count > 1"> · 点击简历翻页</small></span>
       <button class="rs-button" type="button" :disabled="current >= count || turning || loading" @click="flip(current + 1)">下一页 ›</button>
     </footer>
-  </aside>
+  </component>
 </template>
 
 <style scoped>
 .resume-reader { display:grid; grid-template-rows:auto minmax(0,1fr) auto auto; min-width:0; min-height:0; background:#edf1f8; border:1px solid #dde5f1; border-radius:20px; overflow:hidden; box-shadow:0 12px 30px #162d5b0f; }
 header, footer { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 15px; }
 header { background:#fff; border-bottom:1px solid #e4ebf5; }
-header h2 { margin:1px 0 0; font-size:16px; }
+header h2 { margin:1px 0 0; font-size:16px; overflow-wrap:anywhere; }
+.reader-expand { display:grid; place-items:center; }
+.reader-expand svg { width:17px; height:17px; }
+.resume-fullscreen {
+  position:fixed; inset:0; width:100%; height:100vh; height:100dvh;
+  max-width:none; max-height:none; margin:0; padding:0; border:0; border-radius:0;
+  color:var(--rs-text); overscroll-behavior:contain;
+}
+.resume-fullscreen:not([open]) { display:none; }
+.resume-fullscreen .reader-body { padding:0; }
+.resume-fullscreen .paper-face { border-radius:0; }
+.resume-fullscreen footer { padding-top:8px; }
 .reader-kicker { color:#65748f; font-size:11px; font-weight:700; }
 .reader-actions { display:flex; align-items:center; gap:12px; white-space:nowrap; font-size:13px; }
 .reader-close { border:none; border-radius:9px; width:33px; height:33px; font-size:22px; background:#f0f3fa; color:#334567; cursor:pointer; }
@@ -131,6 +159,8 @@ header h2 { margin:1px 0 0; font-size:16px; }
 .reader-error { color:#a02626; }
 footer { padding-top:4px; font-size:13px; color:#475569; }
 footer small { color:#64748b; }
+@media(max-width:420px) { .reader-actions { gap:6px; } header,footer { padding-inline:8px; } }
+@media(max-height:450px) { .resume-fullscreen :is(header,footer) { padding-block:4px; } }
 @media(max-width:540px) { footer small { display:none; } }
 @keyframes page-next { to { transform:rotateY(-180deg); } }
 @keyframes page-prev { to { transform:rotateY(180deg); } }

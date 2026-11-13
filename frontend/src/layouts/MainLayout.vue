@@ -31,10 +31,10 @@ onMounted(() => narrow.addEventListener('change', onWidth))
 onUnmounted(() => narrow.removeEventListener('change', onWidth))
 const menuItems = [
   { label: '工作台', key: 'dashboard', icon: GridOutline },
+  { label: '岗位管理', key: 'jobs', icon: BriefcaseOutline },
   { label: '简历管理', key: 'applications', icon: DocumentsOutline },
   { label: '候选人检索', key: 'search', icon: SearchOutline },
   { label: '复核队列', key: 'review', icon: CreateOutline },
-  { label: '岗位管理', key: 'jobs', icon: BriefcaseOutline },
   { label: '审计日志', key: 'audit', icon: ShieldCheckmarkOutline },
   { label: '系统设置', key: 'admin', icon: ShieldCheckmarkOutline },
 ]

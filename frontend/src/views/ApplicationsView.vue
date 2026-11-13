@@ -25,6 +25,7 @@ const jobs = ref<Job[]>([])
 const approvedSchools = ref<Options['school_tags']>([])
 const jobId = ref<number | ''>(routeJob()), filterJob = ref<number | ''>(routeJob())
 const stageFilter = ref('')
+const selectedJob = computed(() => jobs.value.find(j => j.id === filterJob.value))
 const availableStages = computed(() => stagesFor(jobs.value.find(j => j.id === filterJob.value)?.rounds))
 const format = ref<Format>('pdf')
 const file = ref<File>(), input = ref<HTMLInputElement>()
@@ -37,6 +38,8 @@ const busy = ref(false), loading = ref(false)
 const page = ref(1), total = ref(0)
 const mode = ref('auto'), size = ref(6), customSize = ref(6)
 const selected = ref<ResumeCard>()
+const fullscreenPreview = ref(false)
+watch(selected, row => { if (!row) fullscreenPreview.value = false })
 const paperRatio = ref(Math.SQRT1_2)
 watch(() => selected.value?.id, () => { paperRatio.value = Math.SQRT1_2 })
 const cardViewport = ref<HTMLElement>()
@@ -82,7 +85,10 @@ async function load(next = page.value) {
     if (next > maxPage.value) { void load(maxPage.value); return }
     page.value = next
     rows.value = response.items
-    if (selected.value) selected.value = rows.value.find(row => row.id === selected.value?.id)
+    if (selected.value) {
+      const active = rows.value.find(row => row.id === selected.value?.id)
+      if (active || !fullscreenPreview.value) selected.value = active
+    }
     if (portrait.value) portrait.value = rows.value.find(row => row.id === portrait.value?.id)
     void loadAvatars(rows.value, seq)
     if (rows.value.some(row => row.parse_status === 'parsing')) refreshTimer = setTimeout(() => void load(), 3500)
@@ -99,9 +105,11 @@ function actualHeight() {
   return Math.max(1, Math.min(100, Math.floor((viewport.clientHeight + 8) / (minimum + 8))))
 }
 function adjust(anchor?: number) {
+  if (fullscreenPreview.value) return
   const nextSize = mode.value === 'auto' ? actualHeight() : mode.value === 'custom' ? Math.max(1, Math.min(100, Math.trunc(customSize.value || 1))) : Number(mode.value)
   if (nextSize === size.value) return
-  const first = anchor ?? (page.value - 1) * size.value
+  const selectedIndex = selected.value ? rows.value.findIndex(row => row.id === selected.value?.id) : -1
+  const first = anchor ?? (page.value - 1) * size.value + Math.max(0, selectedIndex)
   size.value = nextSize
   void load(Math.floor(first / nextSize) + 1)
 }
@@ -113,10 +121,12 @@ function search() { currentQuery.value = query.value.trim(); selected.value = un
 function changeJob() {
   stageFilter.value = ''
   tags.value = tags.value.filter(t => !t.id.startsWith('school:'))
-  void router.replace({ query: filterJob.value ? { job: filterJob.value } : {} })
-  const target = jobs.value.find(j => j.id === filterJob.value)
+  const target = selectedJob.value
   jobId.value = target?.status === 'open' && target.manageable ? target.id : ''
   search()
+}
+function clearJobScope() {
+  void router.replace({ query: {} })
 }
 watch(() => route.query.job, () => {
   const id = routeJob()
@@ -165,7 +175,12 @@ async function openCard(row: ResumeCard) {
 async function closeBook() { selected.value = undefined; await nextTick(); adjust() }
 async function openPortrait(row: ResumeCard) { portrait.value = row; await nextTick(); modalClose.value?.focus() }
 function clearPortrait() { portrait.value = undefined }
+function onFullscreenChange(active: boolean) {
+  fullscreenPreview.value = active
+  if (!active) void nextTick().then(() => adjust())
+}
 function esc(event: KeyboardEvent) {
+  if (fullscreenPreview.value) return
   if (event.key === 'Escape') {
     if (portrait.value) clearPortrait()
     else if (selected.value) void closeBook()
@@ -232,9 +247,12 @@ onBeforeUnmount(() => {
     <form class="filter-bar" @submit.prevent="search">
       <label class="keyword"><span aria-hidden="true">⌕</span><input v-model="query" aria-label="搜索简历" placeholder="搜索姓名、岗位或经历关键词"></label>
       <button class="rs-button primary" type="submit">搜索</button>
-      <select v-model="filterJob" aria-label="筛选岗位" @change="changeJob"><option value="">全部岗位</option><option v-for="job in jobs" :key="job.id" :value="job.id">{{ job.title }}</option></select>
       <select v-model="stageFilter" aria-label="筛选招聘状态" @change="search"><option value="">全部招聘状态</option><option v-for="item in availableStages" :key="stageKey(item)" :value="stageKey(item)">{{ item.label }}</option></select>
     </form>
+    <div v-if="selectedJob" class="active-filters">
+      <span>当前岗位：{{ selectedJob.title }}</span>
+      <button type="button" class="clear-filters" @click="clearJobScope">查看本部门简历</button>
+    </div>
     <div v-if="tags.length" class="active-filters" aria-label="当前标签条件">
       <span>同时满足</span><button v-for="tag in tags" :key="tag.id" class="active-filter" type="button" :aria-label="'移除 ' + tag.name" @click="removeTag(tag.id)">{{ tag.name }} ×</button>
       <button type="button" class="clear-filters" @click="tags = []; search()">清除标签</button>
@@ -288,7 +306,7 @@ onBeforeUnmount(() => {
         <button class="rs-button" type="button" aria-label="下一页简历" :disabled="page >= maxPage || loading" @click="changePage(page + 1)">›</button></div>
     </footer>
       </div>
-      <ResumeBook v-if="selected" :resume="selected" @close="closeBook" @page-ratio="paperRatio = $event"/>
+      <ResumeBook v-if="selected" :resume="selected" @close="closeBook" @page-ratio="paperRatio = $event" @fullscreen-change="onFullscreenChange"/>
     </div>
     <Teleport to="body">
       <div v-if="portrait" class="portrait-overlay" role="presentation" @click.self="clearPortrait">
@@ -312,7 +330,7 @@ onBeforeUnmount(() => {
 }
 .resume-list { display:flex; flex-direction:column; gap:12px; padding:20px clamp(14px,2.3vw,34px) 12px; color:#162440; min-width:0; min-height:0; overflow:hidden; }
 .split .resume-list { padding-right:0; }
-.resume-layout > :deep(.resume-reader) { min-height:0; height:100%; border-radius:14px 0 0 14px; }
+.resume-layout > :deep(.resume-reader:not(.resume-fullscreen)) { min-height:0; height:100%; border-radius:14px 0 0 14px; }
 
 .workspace-heading,.page-footer,.heading-actions { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .workspace-heading h1 { margin:2px 0 3px; font-size:30px; letter-spacing:-.025em; line-height:1.16; }
@@ -388,7 +406,7 @@ button.candidate-tag:hover,button.candidate-tag.is-selected { border-color:#7893
 @container (max-width: 710px) {
   .resume-layout.split { position:relative; grid-template-columns:minmax(0,1fr); }
   .split .resume-list { visibility:hidden; padding-right:clamp(14px,2.3vw,34px); }
-  .resume-layout.split > :deep(.resume-reader) { position:absolute; inset:0; border-radius:0; }
+  .resume-layout.split > :deep(.resume-reader:not(.resume-fullscreen)) { position:absolute; inset:0; border-radius:0; }
   .workspace-heading p,.workspace-kicker { display:none; }
   .workspace-heading h1 { font-size:23px; }
   .filter-bar { flex-wrap:wrap; }

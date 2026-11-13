@@ -1,13 +1,26 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { label, loadJobs, locationText, type Job, type Options, type SearchResult } from '@/api/hr'
 
-const filters = reactive({ job_id: 0, keywords: '', section: 'work', degree: '', skill: '', company: '', city: '', min_months: '', school_tag: '', same_experience: true })
+const route = useRoute(), router = useRouter()
+const jobId = computed(() => {
+  const id = typeof route.query.job === 'string' ? Number(route.query.job) : 0
+  return Number.isSafeInteger(id) && id > 0 ? id : 0
+})
+const filters = reactive({ keywords: '', section: 'work', degree: '', skill: '', company: '', city: '', min_months: '', school_tag: '', same_experience: true })
 const states = { match: '满足', review: '待核实', reject: '不满足', no_text: '关键词未命中' }
 const state = ref<keyof typeof states>('match')
 const options = ref<Options>()
 const jobs = ref<Job[]>([])
+const currentJob = computed(() => jobs.value.find(job => job.id === jobId.value))
+const schoolTags = computed(() => options.value?.school_tags.filter(tag => tag.job_id === currentJob.value?.id) ?? [])
+function clearJob() {
+  filters.school_tag = ''
+  results.value = undefined
+  void router.replace({ query: {} })
+}
 const results = ref<SearchResult>()
 const offset = ref(0)
 const busy = ref(false)
@@ -16,9 +29,9 @@ async function run(start = 0) {
   busy.value = true; error.value = ''
   try {
     results.value = await api.post<SearchResult>('/hr/search', {
-      job_id: filters.job_id || null, keywords: filters.keywords.split(/[，,、]+/).map(s => s.trim()).filter(Boolean),
+      job_id: currentJob.value?.id || null, keywords: filters.keywords.split(/[，,、]+/).map(s => s.trim()).filter(Boolean),
       section: filters.section || null, degree: filters.degree || null, skill: filters.skill.trim() || null,
-      company: filters.company.trim() || null, city: filters.city.trim() || null, school_tag: filters.school_tag || null,
+      company: filters.company.trim() || null, city: filters.city.trim() || null, school_tag: schoolTags.value.some(tag => tag.tag_code === filters.school_tag) ? filters.school_tag : null,
       min_months: filters.min_months ? Number(filters.min_months) : null, same_experience: filters.same_experience,
       status: state.value, limit: 20, offset: start,
     })
@@ -33,10 +46,11 @@ onMounted(async () => {
 </script>
 <template>
   <main class="rs-page rs-workspace">
-    <header class="rs-heading"><div><h1>候选人检索</h1><p>按岗位、条件和经历关键词查找候选人</p></div></header>
+    <header class="rs-heading"><div><h1>候选人检索</h1><p>按条件和经历关键词查找本部门候选人</p></div></header>
     <p v-if="error" class="rs-error" role="alert">{{ error }}</p>
     <form class="rs-card rs-panel rs-form" @submit.prevent="run()">
-      <label>岗位<select v-model="filters.job_id" @change="filters.school_tag = ''"><option :value="0">全部岗位</option><option v-for="job in jobs" :key="job.id" :value="job.id">{{ job.title }}</option></select></label>
+      <div v-if="currentJob" class="rs-actions"><span class="rs-muted">当前岗位：{{ currentJob.title }}</span>
+        <button type="button" class="rs-button" @click="clearJob">检索本部门简历</button></div>
       <label class="grow">关键词组<input v-model="filters.keywords" placeholder="例如 高并发，订单"></label>
       <label>经历范围<select v-model="filters.section"><option value="">不限</option><option value="work">工作经历</option><option value="internship">实习</option><option value="project">项目</option><option value="education">教育</option><option value="summary">个人简介</option></select></label>
       <label>最低学历<select v-model="filters.degree"><option value="">不限</option><option v-for="d in ['high_school','associate','bachelor','master','phd']" :key="d" :value="d">{{ label(d) }}</option></select></label>
@@ -44,7 +58,7 @@ onMounted(async () => {
       <datalist id="rs-skills"><option v-for="skill in options?.skills" :key="skill" :value="skill"></option></datalist>
       <label>工作月数<input v-model="filters.min_months" type="number" min="1" max="720" placeholder="例如 36"></label>
       <label>公司<input v-model="filters.company"></label><label>城市<input v-model="filters.city"></label>
-      <label v-if="options?.school_tags.some(tag => tag.job_id === filters.job_id)">院校标签<select v-model="filters.school_tag"><option value="">不限</option><option v-for="tag in options.school_tags.filter(t => t.job_id === filters.job_id)" :key="tag.tag_code" :value="tag.tag_code">{{ tag.tag_code }}</option></select></label>
+      <label v-if="schoolTags.length">院校标签<select v-model="filters.school_tag"><option value="">不限</option><option v-for="tag in schoolTags" :key="tag.tag_code" :value="tag.tag_code">{{ tag.tag_code }}</option></select></label>
       <label>技能、公司与关键词同经历<input v-model="filters.same_experience" type="checkbox"></label>
       <button class="rs-button primary" :disabled="busy">{{ busy ? '查询中' : '检索' }}</button>
     </form>

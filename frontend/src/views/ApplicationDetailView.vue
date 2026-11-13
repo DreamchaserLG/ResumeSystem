@@ -146,7 +146,7 @@ async function showPreview() {
           <button class="rs-button" :aria-expanded="evidenceOpen" @click="evidenceOpen = !evidenceOpen; evidenceOpen && loadEvidence()">原文证据</button>
         </div>
         <form v-if="transferOpen" class="rs-form detail-form" @submit.prevent="moveApplication">
-          <label>目标岗位<select v-model="transfer" required><option value="">选择招聘中的岗位</option><option v-for="job in transferJobs" :key="job.id" :value="job.id">{{ job.department_name }} · {{ job.title }}</option></select></label>
+          <label>目标岗位<select v-model="transfer" required><option value="">选择进行中的岗位</option><option v-for="job in transferJobs" :key="job.id" :value="job.id">{{ job.department_name }} · {{ job.title }}</option></select></label>
           <label class="grow">调剂说明<input v-model="transferReason" maxlength="300" required></label>
           <button class="rs-button primary" :disabled="busy || !transfer">确认调剂</button>
           <p class="rs-muted transfer-hint">简历将进入目标岗位的待审核阶段。</p>

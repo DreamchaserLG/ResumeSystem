@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import { FunnelOutline, CloudUploadOutline, ChevronBackOutline, DocumentTextOutline, AttachOutline, CalendarOutline, SparklesOutline, EllipsisHorizontal } from '@vicons/ionicons5'
+import { FunnelOutline, CloudUploadOutline, ChevronBackOutline, DocumentTextOutline, AttachOutline, CalendarOutline, SparklesOutline, EllipsisHorizontal, PersonOutline } from '@vicons/ionicons5'
 import { ElButton, ElDialog, ElDropdown, ElDropdownMenu, ElDropdownItem, ElInput, ElOption, ElPagination, ElSelect, ElTag, ElMessage } from 'element-plus'
 import { api } from '@/api/client'
 import { readResumeView, saveResumeView } from '@/api/session'
@@ -22,7 +22,7 @@ const incomingCandidate=computed(()=>positive(route.query.candidate))
 const incomingDepartment=computed(()=>positive(route.query.department))
 type ResumeTab='overview'|'resume'|'fields'|'notes'
 type SavedView={path:string; page:number; sort:'recent'|'match'; filters:FilterSelection;
-  tab:ResumeTab; candidate?:number; mobileDetails?:boolean}
+  tab:ResumeTab; candidate?:number; mobileDetails?:boolean; listWidth?:number; detailWidth?:number}
 let restored:SavedView|undefined
 try {
   const saved=JSON.parse(readResumeView() || 'null') as SavedView|null
@@ -97,8 +97,12 @@ const transferOpen=ref(false)
 const transferId=ref<number>()
 const transferReason=ref('')
 const destinations=ref<TransferJob[]>([])
-const listWidth=ref(304)
+const bounded=(value:number|undefined,min:number,max:number,fallback:number)=>Math.min(max,Math.max(min,value ?? fallback))
+const listWidth=ref(bounded(restored?.listWidth,240,460,320))
+const detailWidth=ref(bounded(restored?.detailWidth,320,720,460))
 const mobileDetails=ref(Boolean(restored?.mobileDetails))
+const candidateWorkspace=ref<HTMLElement>()
+const candidateDocument=ref<HTMLElement>()
 const candidateScroll=ref<HTMLElement>()
 const avatar=ref('')
 let listVersion=0
@@ -218,14 +222,15 @@ watch([incomingJob,incomingCandidate,incomingDepartment],([job,candidate],previo
   else void load(candidate)
 })
 watch([page,size,sort],()=>void load())
-watch([page,sort,filters,tab,()=>current.value?.id,mobileDetails],()=>{
+watch([page,sort,filters,tab,()=>current.value?.id,mobileDetails,listWidth,detailWidth],()=>{
   if(route.name!=='applications') return
   const {followup,...selection}=filters.value
   // Save filters and references only; never save the resume or any free-text follow-up.
   const flags=followup?.filter(value=>value==='recorded'||value==='unrecorded')
   saveResumeView(JSON.stringify({path:route.fullPath,page:page.value,sort:sort.value,
     filters:{...selection,followup:flags?.length?flags:undefined},
-    tab:tab.value,candidate:current.value?.id,mobileDetails:mobileDetails.value} satisfies SavedView))
+    tab:tab.value,candidate:current.value?.id,mobileDetails:mobileDetails.value,
+    listWidth:listWidth.value,detailWidth:detailWidth.value} satisfies SavedView))
 },{deep:true,flush:'post'})
 onMounted(()=>{
   void load(restored?.candidate,restored?.mobileDetails)
@@ -270,22 +275,33 @@ async function openFilters() {
     followupOptions.value=[...new Set([...selected,...result.items])]
   } catch { followupOptions.value=[] }
 }
-function resize(event:PointerEvent) {
+function horizontalResize(event:PointerEvent,current:number,min:number,max:number,update:(value:number)=>void) {
   if(event.button!==0) return
-  const start=event.clientX,width=listWidth.value
+  dragEnd?.()
+  const start=event.clientX
   const element=event.currentTarget as HTMLElement
   element.setPointerCapture(event.pointerId)
-  const move=(point:PointerEvent)=>{listWidth.value=Math.min(360,Math.max(240,width+point.clientX-start))}
+  document.body.classList.add('candidate-column-resizing')
+  const move=(point:PointerEvent)=>update(Math.min(max,Math.max(min,current+point.clientX-start)))
   const end=()=>{
     element.removeEventListener('pointermove',move)
     element.removeEventListener('pointerup',end)
     element.removeEventListener('pointercancel',end)
+    document.body.classList.remove('candidate-column-resizing')
     dragEnd=undefined
   }
   element.addEventListener('pointermove',move)
   element.addEventListener('pointerup',end)
   element.addEventListener('pointercancel',end)
   dragEnd=end
+}
+function resizeList(event:PointerEvent) {
+  const available=candidateWorkspace.value?.clientWidth ?? 1200
+  horizontalResize(event,listWidth.value,240,Math.max(240,Math.min(460,available-760)),value=>{listWidth.value=value})
+}
+function resizeDetail(event:PointerEvent) {
+  const available=candidateDocument.value?.clientWidth ?? 980
+  horizontalResize(event,detailWidth.value,320,Math.max(320,Math.min(720,available-360)),value=>{detailWidth.value=value})
 }
 async function focusFollowup() {
   tab.value='notes'
@@ -406,7 +422,7 @@ function tagValue(tag:ResumeCard['tags'][number]) {
     </header>
     <p v-if="error" class="hire-error candidate-error" role="alert">{{ error }} <button class="hire-inline-button" @click="load()">重试</button></p>
 
-    <div class="candidate-workspace hire-surface" :style="{'--candidate-width':listWidth+'px'}"
+    <div ref="candidateWorkspace" class="candidate-workspace hire-surface" :style="{'--candidate-width':listWidth+'px'}"
       :class="{ 'mobile-details':mobileDetails && current }">
       <aside class="candidate-aside" aria-label="候选人列表">
         <header v-show="!filterOpen" class="candidate-toolbar">
@@ -439,16 +455,17 @@ function tagValue(tag:ResumeCard['tags'][number]) {
           <footer v-show="!filterOpen" class="candidate-pagination"><span>{{ total }} 份</span><ElPagination v-model:current-page="page" :page-size="size" :total="total" layout="prev, pager, next" :pager-count="3" small/></footer>
       </aside>
       <div class="candidate-resize" role="separator" aria-label="调整列表宽度" aria-orientation="vertical" tabindex="0"
-        :aria-valuemin="240" :aria-valuemax="360" :aria-valuenow="listWidth" @pointerdown="resize"
-        @keydown.left.prevent="listWidth=Math.max(240,listWidth-12)" @keydown.right.prevent="listWidth=Math.min(360,listWidth+12)"></div>
+        title="拖动调整候选人栏宽度" :aria-valuemin="240" :aria-valuemax="460" :aria-valuenow="listWidth" @pointerdown="resizeList"
+        @keydown.left.prevent="listWidth=Math.max(240,listWidth-12)" @keydown.right.prevent="listWidth=Math.min(460,listWidth+12)"></div>
       <section v-if="current" class="candidate-details" aria-label="候选简历详情">
         <div class="candidate-detail-body">
-          <div class="candidate-document-layout" :class="{ 'show-compact-preview':tab==='resume' }">
+          <div ref="candidateDocument" class="candidate-document-layout" :class="{ 'show-compact-preview':tab==='resume' }"
+            :style="{'--detail-width':detailWidth+'px'}">
             <div class="candidate-context">
               <div class="candidate-context-top">
                 <header class="candidate-detail-header">
                   <button v-if="mobileDetails" type="button" class="aside-toggle mobile-back" aria-label="返回候选列表" @click="mobileDetails=false"><ChevronBackOutline/></button>
-                  <span class="candidate-avatar"><img v-if="avatar" :src="avatar" alt=""><span v-else>{{ displayName(current).slice(0,2) }}</span></span>
+                  <span class="candidate-avatar"><img v-if="avatar" :src="avatar" alt="候选人头像"><PersonOutline v-else aria-hidden="true"/></span>
                   <div class="candidate-identity"><h2>{{ displayName(current) }}</h2>
                     <p>{{ current.job_title }} <span>· 申请 #{{ current.id }}</span></p></div>
                   <div class="hire-toolbar candidate-action">
@@ -569,6 +586,9 @@ function tagValue(tag:ResumeCard['tags'][number]) {
           </section>
               </div>
             </div>
+            <div class="candidate-document-resize" role="separator" aria-label="调整个人信息宽度" aria-orientation="vertical" tabindex="0"
+              title="拖动调整个人信息与简历原文宽度" :aria-valuemin="320" :aria-valuemax="720" :aria-valuenow="detailWidth" @pointerdown="resizeDetail"
+              @keydown.left.prevent="detailWidth=Math.max(320,detailWidth-12)" @keydown.right.prevent="detailWidth=Math.min(720,detailWidth+12)"></div>
             <ResumeBook class="candidate-reader" :resume="current" :avatar-url="avatar" embedded/>
           </div>
         </div>
@@ -611,7 +631,7 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .import-actions {display:flex; flex-wrap:wrap; justify-content:end; gap:7px}
 .import-actions .el-button {margin:0}
 .candidate-page:has(.candidate-error){grid-template-rows:auto auto minmax(0,1fr)}
-.candidate-workspace {display:grid;grid-template-columns:var(--candidate-width) 5px minmax(0,1fr);min-height:0;overflow:hidden}
+.candidate-workspace {display:grid;grid-template-columns:min(var(--candidate-width),38%) 7px minmax(0,1fr);min-height:0;overflow:hidden}
 .candidate-aside {display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-height:0;min-width:0}
 .candidate-toolbar {position:relative;padding:12px;border-bottom:1px solid var(--hire-line);background:linear-gradient(180deg,#fff,#fbfdfd)}
 .candidate-toolbar-main,.candidate-row-top,.candidate-pagination,.note-meta,.note-actions{display:flex;align-items:center;gap:8px;min-width:0}
@@ -635,18 +655,20 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-job {font-size:13px}
 .latest-note {display:block;justify-self:start;max-width:100%;font-size:11px;padding:2px 7px;border-radius:4px;background:#e4eeed;color:#355e57;margin-top:2px}
 .candidate-pagination{padding:9px 10px;justify-content:space-between;border-top:1px solid var(--hire-line)}
-.candidate-resize {background:linear-gradient(180deg,#e5edee,#d8e4e5);cursor:col-resize;touch-action:none}
-.candidate-resize:hover,.candidate-resize:focus-visible{background:#8abdb6}
+.candidate-resize,.candidate-document-resize {position:relative;background:#edf2f2;cursor:col-resize;touch-action:none;outline:0}
+.candidate-resize::after,.candidate-document-resize::after {content:'';position:absolute;inset:50% auto auto 50%;width:2px;height:38px;border-radius:2px;background:#b8c9c8;transform:translate(-50%,-50%);transition:height var(--rs-motion-fast),background-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast)}
+.candidate-resize:hover::after,.candidate-resize:focus-visible::after,.candidate-document-resize:hover::after,.candidate-document-resize:focus-visible::after {height:54px;background:var(--hire-accent);box-shadow:0 0 0 3px rgba(13,137,126,.1)}
+:global(body.candidate-column-resizing){cursor:col-resize!important;user-select:none!important}
 .candidate-details {min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr)}
 .candidate-detail-header {padding:11px 14px 8px;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px 10px}
-.candidate-avatar{display:grid;place-items:center;width:40px;height:40px;background:linear-gradient(135deg,var(--hire-soft),#eef0ff);color:var(--hire-accent-dark);font-size:13px;font-weight:680;border:1px solid #d9ebe7;border-radius:11px;overflow:hidden;flex:none;box-shadow:0 5px 13px rgba(23,75,78,.07)}
-.candidate-avatar img{width:100%;height:100%;object-fit:cover}.candidate-identity{min-width:0}
+.candidate-avatar{display:grid;place-items:center;width:42px;height:42px;background:linear-gradient(135deg,var(--hire-soft),#eef0ff);color:var(--hire-accent-dark);border:1px solid #d3e7e3;border-radius:50%;overflow:hidden;flex:none;box-shadow:0 5px 13px rgba(23,75,78,.08)}
+.candidate-avatar img{width:100%;height:100%;object-fit:cover}.candidate-avatar svg{width:23px;height:23px}.candidate-identity{min-width:0}
 .candidate-identity h2{font-size:18px;line-height:1.3}.candidate-identity p{font-size:12px;color:var(--hire-muted);overflow-wrap:anywhere}
 .candidate-action {grid-column:1/-1;justify-content:flex-start;gap:7px;padding-top:3px}
 .candidate-action .el-button {min-width:0;margin:0}
 .candidate-action .el-dropdown {margin-inline-start:auto}
 .candidate-detail-body {overflow:hidden;display:flex;flex-direction:column;min-height:0;background:white;container-type:inline-size}
-.candidate-document-layout {display:grid;grid-template-columns:minmax(256px,clamp(295px,41%,475px)) minmax(0,1fr);flex:1;min-height:0}
+.candidate-document-layout {display:grid;grid-template-columns:var(--detail-width) 7px minmax(0,1fr);flex:1;min-height:0}
 .candidate-context {min-width:0;min-height:0;display:flex;flex-direction:column;background:white}
 .candidate-context-top {flex:none;border-bottom:1px solid var(--hire-line)}
 .candidate-context-scroll {flex:1;min-height:0;overflow:auto;padding:13px 14px;scrollbar-width:thin}
@@ -674,11 +696,12 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-tabs button[aria-pressed=true] {color:var(--hire-accent-dark);border-bottom-color:var(--hire-accent);font-weight:650}
 .candidate-tabs small {font-size:11px;margin-left:3px}
 .candidate-tabs .compact-preview-tab {display:none}
-.candidate-reader:not(.resume-fullscreen) {height:100%;min-height:0;border-radius:0;border:0;border-inline-start:1px solid var(--hire-line);box-shadow:none}
-@container (max-width:580px) {
+.candidate-reader:not(.resume-fullscreen) {height:100%;min-height:0;border-radius:0;border:0;box-shadow:none}
+@container (max-width:720px) {
   .candidate-tabs {gap:9px;padding-inline:10px}
   .candidate-tabs .compact-preview-tab {display:block}
   .candidate-document-layout {grid-template-columns:minmax(0,1fr)}
+  .candidate-document-resize {display:none}
   .candidate-document-layout.show-compact-preview {grid-template-rows:auto minmax(0,1fr)}
   .candidate-document-layout.show-compact-preview .candidate-context {display:contents}
   .candidate-document-layout:not(.show-compact-preview) .candidate-reader:not(.resume-fullscreen),

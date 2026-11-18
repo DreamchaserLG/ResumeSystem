@@ -10,7 +10,7 @@ const fullscreen = ref(false)
 const reader = ref<HTMLElement>()
 const readerBody = ref<HTMLElement>()
 const fullscreenButton = ref<HTMLButtonElement>()
-const fitPage = ref(false)
+const fitPage = ref(true)
 const zoom = ref(1)
 const widthFit = computed(()=>(props.embedded || fullscreen.value) && !fitPage.value)
 const paperStyle = computed(()=>({
@@ -75,7 +75,7 @@ async function getPage(page: number, epoch: number) {
 }
 watch(() => [props.resume.id, props.resume.version_id, count.value], async () => {
   clear(); current.value = 1; target.value = 1
-  fitPage.value=false; zoom.value=1
+  fitPage.value=true; zoom.value=1
   if (!count.value || !props.resume.version_id) return
   const epoch = generation
   loading.value = true

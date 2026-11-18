@@ -455,9 +455,10 @@ function dateText(value:string) {
 </template>
 
 <style scoped>
-.job-metrics {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:16px;padding:3px 8px}
-.job-metrics button {text-align:left;display:grid;gap:3px;background:transparent;border:0;border-bottom:2px solid transparent;padding:13px 18px;cursor:pointer;color:var(--hire-ink)}
-.job-metrics button[aria-pressed=true] {border-color:var(--hire-accent);color:var(--hire-accent-dark)}
+.job-metrics {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:16px;padding:4px 8px;overflow:hidden}
+.job-metrics button {text-align:left;display:grid;gap:4px;background:transparent;border:0;border-bottom:2px solid transparent;padding:14px 18px;cursor:pointer;color:var(--hire-ink);transition:background-color var(--rs-motion-fast),color var(--rs-motion-fast),transform var(--rs-motion-fast) var(--rs-ease)}
+.job-metrics button:hover {background:var(--rs-primary-softer);transform:translateY(-1px)}
+.job-metrics button[aria-pressed=true] {border-color:var(--hire-accent);color:var(--hire-accent-dark);background:linear-gradient(180deg,transparent,var(--rs-primary-softer))}
 .job-metrics span {font-size:13px;color:var(--hire-muted)} .job-metrics strong {font-size:25px;font-variant-numeric:tabular-nums}
 .job-toolbar {padding:15px 16px;min-height:64px}
 .job-toolbar :deep(.el-select) {width:128px} .job-toolbar :deep(.el-input) {width:220px}
@@ -467,7 +468,7 @@ function dateText(value:string) {
 .job-board :deep(.department td) {background:#fff;font-weight:550}
 .job-board :deep(.job-row) {cursor:pointer}
 .folder-title {display:inline-flex;vertical-align:middle;gap:7px;align-items:center}
-.folder-title svg,.job-detail-title svg {width:17px;height:17px;color:#6579a2;flex:none}
+.folder-title svg,.job-detail-title svg {width:17px;height:17px;color:var(--hire-accent);flex:none}
 .job-title {font-weight:630;text-align:left;text-decoration:none}
 .job-title:hover {color:var(--hire-accent)}
 .flow-text {display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -478,7 +479,7 @@ function dateText(value:string) {
 .job-detail-title {display:flex;gap:10px;align-items:flex-start}
 .job-detail-title h2 {font-size:21px;line-height:1.25;margin-bottom:5px}
 .job-detail-title svg {margin-top:4px;width:25px;height:25px}
-.job-facts {display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:18px;background:#f6f8fa;margin:18px 0;border-radius:8px;font-size:13px}
+.job-facts {display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:18px;border:1px solid #dcebe8;background:linear-gradient(135deg,#f3faf8,#f7f8fc);margin:18px 0;border-radius:11px;font-size:13px}
 .job-facts dt {color:var(--hire-muted)} .job-facts dd {margin:3px 0 0}
 .job-requirement-heading {margin-top:17px}
 .job-tag-details {display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:14px;font-size:13px}
@@ -487,7 +488,8 @@ function dateText(value:string) {
 .job-editor {display:grid;grid-template-columns:1fr 1fr;gap:15px}
 .job-editor .wide,.job-editor .hire-error {grid-column:1/-1}
 .job-editor label {display:grid;gap:5px;font-size:13px}
-.job-editor :is(input[type=number],input[type=date]) {min-width:0;width:100%;padding:6px 8px;border:1px solid var(--hire-line);border-radius:6px;color:inherit;background:white}
+.job-editor :is(input[type=number],input[type=date]) {min-width:0;width:100%;padding:7px 9px;border:1px solid var(--rs-border-strong);border-radius:8px;color:inherit;background:white;transition:border-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast)}
+.job-editor :is(input[type=number],input[type=date]):focus {outline:0;border-color:var(--hire-accent);box-shadow:0 0 0 3px rgba(13,137,126,.1)}
 .round-edit {margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px}
 .round-edit button {flex:none}
 .job-import-form {display:grid;gap:10px}

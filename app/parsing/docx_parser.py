@@ -10,7 +10,28 @@ from docx.text.paragraph import Paragraph
 from app.core.extraction import LABELS, norm
 from app.parsing.ir import Page, ParsedDocument, Span
 
-PARSER_VERSION = "docx-v1"
+PARSER_VERSION = "docx-v2"
+
+
+def _xml_text(element) -> str:
+    """Read visible Word text, including DrawingML/text-box descendants.
+
+    ``python-docx``'s ``Paragraph.text`` deliberately ignores text nested in
+    shapes.  Resume templates frequently place the name, contact summary and
+    section labels in those shapes, so relying on it alone silently drops a
+    sizeable part of the document.
+    """
+    return "".join(
+        node.text or ""
+        for node in element.iter()
+        if node.tag.rsplit("}", 1)[-1] == "t"
+    ).strip()
+
+
+def _paragraph_text(paragraph: Paragraph) -> str:
+    plain = paragraph.text.strip()
+    expanded = _xml_text(paragraph._element)
+    return expanded if len(expanded) > len(plain) else plain
 
 
 def parse_docx(path: str) -> ParsedDocument:
@@ -23,11 +44,34 @@ def parse_docx(path: str) -> ParsedDocument:
     order = 0
     para_idx = 0
     table_idx = 0
+
+    # Header text is often where a resume template keeps the candidate name
+    # and contact block.  De-duplicate linked headers across Word sections.
+    seen_header_footer: set[tuple[str, str]] = set()
+    for section_idx, section in enumerate(d.sections):
+        for area_name, area in (("header", section.header), ("footer", section.footer)):
+            for area_para_idx, para in enumerate(area.paragraphs):
+                text = _paragraph_text(para)
+                marker = (area_name, text)
+                if not text or marker in seen_header_footer:
+                    continue
+                seen_header_footer.add(marker)
+                order += 1
+                pd.add_span(
+                    Span(
+                        span_kind="text",
+                        raw_text=text,
+                        locator={f"docx_{area_name}": [section_idx, area_para_idx]},
+                        extraction_method=f"docx_{area_name}",
+                        reading_order=order,
+                    )
+                )
+
     for element in d.element.body:
         tag = element.tag.split("}")[-1]
         if tag == "p":
             para = Paragraph(element, d)
-            text = para.text.strip()
+            text = _paragraph_text(para)
             if not text:
                 para_idx += 1
                 continue
@@ -49,7 +93,11 @@ def parse_docx(path: str) -> ParsedDocument:
             table_idx += 1
             headers = []
             for r, row in enumerate(table.rows):
-                cells = [c.text.strip() for c in row.cells]
+                cells = []
+                for cell in row.cells:
+                    plain = cell.text.strip()
+                    expanded = _xml_text(cell._tc)
+                    cells.append(expanded if len(expanded) > len(plain) else plain)
                 if not any(cells):
                     continue
                 order += 1

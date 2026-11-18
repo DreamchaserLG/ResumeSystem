@@ -255,18 +255,18 @@ function cell(value:unknown) {return String(value).replaceAll('|','\\|').replace
 .analysis-layout{display:grid;grid-template-columns:minmax(300px,396px) minmax(0,1fr);gap:14px;min-height:0}
 .analysis-chat{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;overflow:hidden;min-height:0}
 .analysis-chat-head{display:flex;gap:11px;align-items:center;border-bottom:1px solid var(--hire-line);padding:15px}
-.analysis-icon{width:37px;height:37px;border-radius:9px;background:var(--hire-soft);display:grid;place-items:center;color:var(--hire-accent-dark);flex:none}
+.analysis-icon{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--hire-soft),var(--rs-accent-soft));display:grid;place-items:center;color:var(--hire-accent-dark);flex:none;box-shadow:0 6px 15px rgba(13,137,126,.1)}
 .analysis-icon svg{width:19px;height:19px}
 .analysis-chat-head h2,.result-heading h2{font-size:17px;line-height:1.25}.analysis-chat-head p,.result-heading p{color:var(--hire-muted);font-size:12px;margin-top:4px}
-.analysis-scope{display:grid;grid-template-columns:1fr 1fr 97px;gap:6px;padding:11px 12px;border-bottom:1px solid var(--hire-line);background:#fafcfd}
+.analysis-scope{display:grid;grid-template-columns:1fr 1fr 97px;gap:6px;padding:11px 12px;border-bottom:1px solid var(--hire-line);background:linear-gradient(180deg,#fbfdfd,#f6faf9)}
 .analysis-scope>*{min-width:0}
 .analysis-chat-scroll{overflow:auto;padding:13px}
 .analysis-suggestions,.chat-history{display:grid;gap:7px}.analysis-suggestions h3{font-size:13px;color:#455a6c;margin-bottom:2px}
-.analysis-suggestions button{display:flex;align-items:center;gap:6px;text-align:left;background:#f4f7f9;border:0;border-radius:7px;padding:8px 10px;cursor:pointer;color:#385166;font-size:13px}
-.analysis-suggestions button:hover{background:var(--hire-soft)}
+.analysis-suggestions button{display:flex;align-items:center;gap:6px;text-align:left;background:#f4f8f8;border:1px solid transparent;border-radius:8px;padding:9px 10px;cursor:pointer;color:#38545e;font-size:13px;transition:transform var(--rs-motion-fast) var(--rs-ease),background-color var(--rs-motion-fast),border-color var(--rs-motion-fast)}
+.analysis-suggestions button:hover{background:var(--hire-soft);border-color:#cde7e3;transform:translateX(2px)}
 .analysis-suggestions button svg,.chat-tool svg{width:14px;height:14px;flex:none}
 .chat-history{margin-top:17px}.chat-history article{display:grid;gap:6px}
-.chat-question{justify-self:end;max-width:92%;border:1px solid transparent;background:#eef4f4;color:#2c4b52;border-radius:9px;padding:9px 11px;cursor:pointer;font-size:13px;overflow-wrap:anywhere}
+.chat-question{justify-self:end;max-width:92%;border:1px solid #dce9e8;background:linear-gradient(135deg,#eef7f5,#f2f5fb);color:#2c4b52;border-radius:11px 11px 3px 11px;padding:9px 11px;cursor:pointer;font-size:13px;overflow-wrap:anywhere;transition:border-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast)}
 .chat-question[aria-pressed=true]{border-color:#8dbbb5;background:var(--hire-soft)}
 .chat-tool{display:flex;align-items:center;gap:5px;color:var(--hire-muted);font-size:12px}
 .analysis-composer{padding:12px;border-top:1px solid var(--hire-line)}
@@ -278,7 +278,8 @@ function cell(value:unknown) {return String(value).replaceAll('|','\\|').replace
 .result-heading,.report-head,.chart-legend,.chart-dates{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .result-heading,.report-card{padding:14px}
 .result-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(103px,1fr));gap:8px}
-.result-metrics article{padding:10px 12px;display:grid;gap:5px}
+.result-metrics article{padding:11px 13px;display:grid;gap:5px;transition:transform var(--rs-motion-panel) var(--rs-ease),box-shadow var(--rs-motion-fast)}
+.result-metrics article:hover{transform:translateY(-2px);box-shadow:var(--rs-shadow-md)}
 .result-metrics span,.result-metrics small{font-size:12px;color:var(--hire-muted);font-weight:400}
 .result-metrics strong{font-size:23px;font-variant-numeric:tabular-nums;color:var(--hire-ink)}
 .report-head{margin-bottom:11px;flex-wrap:wrap}.report-head h3{display:flex;align-items:center;gap:6px;font-size:14px}.report-head svg{width:17px;height:17px;color:var(--hire-accent)}

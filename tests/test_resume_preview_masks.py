@@ -5,6 +5,7 @@ import pymupdf
 from PIL import Image
 
 from app.parsing.ir import ParsedDocument, Span
+from app.parsing.docx_parser import parse_docx
 from app.parsing.preview import render_preview
 
 
@@ -43,3 +44,28 @@ def test_image_keeps_non_sensitive_lines_and_removes_sensitive_pixels(tmp_path):
     image = Image.open(BytesIO(content))
     assert image.getpixel((60,90)) == (237,241,245)
     assert image.getpixel((60,120)) == (255,255,255)
+
+
+def test_docx_has_text_preview_without_libreoffice(tmp_path, monkeypatch):
+    from docx import Document
+
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_heading("示例候选人", level=1)
+    for index in range(80):
+        document.add_paragraph(f"项目经历 {index + 1}：负责系统设计、开发与交付。")
+    document.save(path)
+    parsed = parse_docx(str(path))
+    monkeypatch.setattr("app.parsing.preview.shutil.which", lambda _: None)
+
+    pages, avatar = render_preview(
+        str(path),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        parsed,
+        False,
+    )
+
+    assert len(pages) >= 2
+    assert [number for number, _, _ in pages] == list(range(1, len(pages) + 1))
+    assert all(Image.open(BytesIO(content)).getbbox() for _, content, _ in pages)
+    assert avatar is None

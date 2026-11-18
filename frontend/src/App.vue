@@ -10,16 +10,17 @@ document.documentElement.classList.remove('dark')
 
 const overrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: '#4e6fa4',
-    primaryColorHover: '#405f93',
-    primaryColorPressed: '#355282',
-    primaryColorSuppl: '#6483b1',
-    borderRadius: '8px',
+    primaryColor: '#0d897e',
+    primaryColorHover: '#08756c',
+    primaryColorPressed: '#075f59',
+    primaryColorSuppl: '#159a8d',
+    borderRadius: '10px',
     fontSize: '14px',
     fontFamily: 'var(--rs-font-family)',
   },
-  Card: { borderRadius: '12px' },
-  Button: { borderRadiusMedium: '8px' },
+  Card: { borderRadius: '14px' },
+  Button: { borderRadiusMedium: '9px' },
+  Input: { borderRadius: '9px' },
   Message: { colorSuccess: '#e3f5ed', textColorSuccess: '#14533f', iconColorSuccess: '#187653' },
 }
 

@@ -75,6 +75,7 @@ def test_docx_parsing(tmp_path):
     from docx import Document
 
     doc = Document()
+    doc.sections[0].header.paragraphs[0].text = "页眉中的候选人信息"
     doc.add_paragraph("示例候选人")
     table = doc.add_table(rows=0, cols=2)
     for label, value in (("岗位", "软件工程师"), ("学历", "本科"), ("工作单位", "示例科技公司")):
@@ -92,6 +93,7 @@ def test_docx_parsing(tmp_path):
     table_spans = [s for s in pd.spans if s.span_kind == "table"]
     assert table_spans and all(isinstance(s.locator.get("docx_table"), list) for s in table_spans)
     assert "示例科技公司" in " ".join(s.raw_text or "" for s in table_spans)
+    assert any(s.locator.get("docx_header") is not None and "页眉中的候选人信息" in (s.raw_text or "") for s in pd.spans)
     assert pd.meta["embedded_images"]
 
 

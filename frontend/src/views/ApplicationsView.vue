@@ -613,32 +613,33 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-page:has(.candidate-error){grid-template-rows:auto auto minmax(0,1fr)}
 .candidate-workspace {display:grid;grid-template-columns:var(--candidate-width) 5px minmax(0,1fr);min-height:0;overflow:hidden}
 .candidate-aside {display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-height:0;min-width:0}
-.candidate-toolbar {position:relative;padding:12px;border-bottom:1px solid var(--hire-line)}
+.candidate-toolbar {position:relative;padding:12px;border-bottom:1px solid var(--hire-line);background:linear-gradient(180deg,#fff,#fbfdfd)}
 .candidate-toolbar-main,.candidate-row-top,.candidate-pagination,.note-meta,.note-actions{display:flex;align-items:center;gap:8px;min-width:0}
 .candidate-toolbar-main>span {font-size:12px;color:var(--hire-muted)}.candidate-toolbar-main>.el-button{margin-inline-start:auto}
-.aside-toggle{display:grid;place-items:center;width:29px;height:29px;border:1px solid var(--hire-line);border-radius:6px;background:white;color:#556a7c;cursor:pointer;flex:none}
+.aside-toggle{display:grid;place-items:center;width:30px;height:30px;border:1px solid var(--hire-line);border-radius:7px;background:white;color:var(--hire-accent-dark);cursor:pointer;flex:none;transition:background-color var(--rs-motion-fast),border-color var(--rs-motion-fast),transform var(--rs-motion-fast)}
+.aside-toggle:hover{background:var(--hire-soft);border-color:#9ac9c3;transform:scale(1.04)}
 .aside-toggle svg {width:14px;height:14px}
 .filter-count {text-align:center;min-width:17px;border-radius:9px;background:var(--hire-accent);color:white;font-size:11px;padding:2px 4px;margin-left:5px}
 .candidate-sort {clear:both;display:flex;gap:4px;margin-top:9px}
-.candidate-sort button {background:none;border:0;border-radius:5px;padding:5px 6px;color:var(--hire-muted);font-size:12px;cursor:pointer}
+.candidate-sort button {background:none;border:0;border-radius:6px;padding:5px 7px;color:var(--hire-muted);font-size:12px;cursor:pointer;transition:background-color var(--rs-motion-fast),color var(--rs-motion-fast)}
 .candidate-sort button[aria-pressed=true] {background:var(--hire-soft);color:var(--hire-accent-dark)}
 .candidate-sort .clear-filters{margin-left:auto;color:var(--hire-accent-dark)}
 .candidate-list {overflow:auto;min-width:0}
 .candidate-row {display:grid;grid-template-columns:minmax(0,1fr);width:100%;text-align:left;gap:4px;padding:12px 14px;
-  border:0;border-bottom:1px solid #edf0f2;border-inline-start:3px solid transparent;background:#fff;cursor:pointer;color:var(--hire-ink)}
-.candidate-row:hover {background:#f7fafb}
-.candidate-row[aria-current=true] {background:#eef8f5;border-inline-start-color:var(--hire-accent)}
+  border:0;border-bottom:1px solid #edf0f2;border-inline-start:3px solid transparent;background:#fff;cursor:pointer;color:var(--hire-ink);transition:background-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast),transform var(--rs-motion-fast) var(--rs-ease)}
+.candidate-row:hover {background:#f4faf8;transform:translateX(2px)}
+.candidate-row[aria-current=true] {background:linear-gradient(90deg,#e9f8f4,#f6fbfa);border-inline-start-color:var(--hire-accent);box-shadow:inset 8px 0 18px rgba(13,137,126,.035)}
 .candidate-row-top {justify-content:space-between;font-size:14px;margin-bottom:1px}
 .candidate-row-top strong,.candidate-job,.candidate-brief,.latest-note{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .candidate-row-top small,.candidate-brief,.candidate-pagination {color:var(--hire-muted);font-size:12px}
 .candidate-job {font-size:13px}
 .latest-note {display:block;justify-self:start;max-width:100%;font-size:11px;padding:2px 7px;border-radius:4px;background:#e4eeed;color:#355e57;margin-top:2px}
 .candidate-pagination{padding:9px 10px;justify-content:space-between;border-top:1px solid var(--hire-line)}
-.candidate-resize {background:#e9eef1;cursor:col-resize;touch-action:none}
+.candidate-resize {background:linear-gradient(180deg,#e5edee,#d8e4e5);cursor:col-resize;touch-action:none}
 .candidate-resize:hover,.candidate-resize:focus-visible{background:#8abdb6}
 .candidate-details {min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr)}
 .candidate-detail-header {padding:11px 14px 8px;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px 10px}
-.candidate-avatar{display:grid;place-items:center;width:39px;height:39px;background:var(--hire-soft);color:var(--hire-accent-dark);font-size:13px;font-weight:650;border-radius:9px;overflow:hidden;flex:none}
+.candidate-avatar{display:grid;place-items:center;width:40px;height:40px;background:linear-gradient(135deg,var(--hire-soft),#eef0ff);color:var(--hire-accent-dark);font-size:13px;font-weight:680;border:1px solid #d9ebe7;border-radius:11px;overflow:hidden;flex:none;box-shadow:0 5px 13px rgba(23,75,78,.07)}
 .candidate-avatar img{width:100%;height:100%;object-fit:cover}.candidate-identity{min-width:0}
 .candidate-identity h2{font-size:18px;line-height:1.3}.candidate-identity p{font-size:12px;color:var(--hire-muted);overflow-wrap:anywhere}
 .candidate-action {grid-column:1/-1;justify-content:flex-start;gap:7px;padding-top:3px}
@@ -649,7 +650,7 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-context {min-width:0;min-height:0;display:flex;flex-direction:column;background:white}
 .candidate-context-top {flex:none;border-bottom:1px solid var(--hire-line)}
 .candidate-context-scroll {flex:1;min-height:0;overflow:auto;padding:13px 14px;scrollbar-width:thin}
-.candidate-info,.candidate-match,.candidate-recent {padding:13px;border:1px solid var(--hire-line);border-radius:10px;background:white;margin-bottom:12px}
+.candidate-info,.candidate-match,.candidate-recent {padding:14px;border:1px solid var(--hire-line);border-radius:12px;background:white;margin-bottom:12px;box-shadow:0 3px 12px rgba(18,50,61,.035)}
 .candidate-info h3,.candidate-match h3,.candidate-recent h3 {font-size:14px;line-height:1.4}
 .candidate-summary {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 12px;margin:13px 0 0}
 .candidate-summary>div {display:grid;gap:3px;align-content:start;min-width:0}
@@ -661,7 +662,7 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .profile-evidence-tags {display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
 .profile-skill-chip {padding:2px 7px;border:1px solid #dce5ea;border-radius:4px;background:#f3f6f8;
   color:#405569;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
-.candidate-match {background:#f3faf7;border-color:#e0eee8}
+.candidate-match {background:linear-gradient(135deg,#f1faf7,#f8fbff);border-color:#dbece8}
 .match-heading {display:flex;align-items:center;gap:7px;min-height:27px}
 .match-heading svg {width:17px;height:17px;color:var(--hire-accent);flex:none}
 .match-heading button {margin-inline-start:auto;height:27px;padding:0 2px}

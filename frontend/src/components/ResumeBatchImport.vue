@@ -163,11 +163,13 @@ onBeforeUnmount(()=>{disposed=true;if(poller)clearTimeout(poller)})
 .link-application {font-size:13px;color:var(--hire-muted)}
 .link-application summary {cursor:pointer}
 .link-application label {margin-top:8px}
-.link-application input {padding:7px 10px;border:1px solid var(--hire-line);border-radius:6px;color:var(--hire-ink)}
+.link-application input {padding:8px 10px;border:1px solid var(--rs-border-strong);border-radius:7px;color:var(--hire-ink);transition:border-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast)}
+.link-application input:focus {outline:0;border-color:var(--hire-accent);box-shadow:0 0 0 3px rgba(13,137,126,.1)}
 .batch-help,.batch-progress {display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--hire-muted)}
 .batch-progress :deep(.el-progress) {width:45%}
-.batch-list {max-height:210px;overflow:auto;list-style:none; border:1px solid var(--hire-line);border-radius:6px}
-.batch-list li {display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--hire-line)}
+.batch-list {max-height:210px;overflow:auto;list-style:none; border:1px solid var(--hire-line);border-radius:9px;background:#fbfdfd}
+.batch-list li {display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--hire-line);transition:background-color var(--rs-motion-fast)}
+.batch-list li:hover {background:var(--rs-primary-softer)}
 .batch-list li:last-child{border-bottom:0}
 .batch-list li>div {flex:1;min-width:0}.batch-list strong,.batch-list small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.batch-list small{color:#926166}
 </style>

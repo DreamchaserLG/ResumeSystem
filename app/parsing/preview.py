@@ -7,7 +7,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
-from app.core.extraction import PRIVATE_LABELS, SENSITIVE, norm
+from app.core.extraction import PRIVATE_LABELS, SENSITIVE, masked, norm
 from app.parsing import pipeline
 
 MAX_PAGES = 40
@@ -146,6 +146,90 @@ def _pdf(path, doc, avatar_allowed):
     return pages, avatar
 
 
+def _wrapped_lines(text, max_width, font_name, font_size):
+    """Wrap mixed Chinese/Latin text without depending on whitespace."""
+    import pymupdf
+
+    lines = []
+    for source_line in (text or "").splitlines() or [""]:
+        source_line = source_line.strip()
+        if not source_line:
+            lines.append("")
+            continue
+        current = ""
+        for char in source_line:
+            candidate = current + char
+            if current and pymupdf.get_text_length(candidate, fontname=font_name, fontsize=font_size) > max_width:
+                lines.append(current.rstrip())
+                current = char.lstrip()
+            else:
+                current = candidate
+        if current:
+            lines.append(current.rstrip())
+    return lines
+
+
+def _text_preview(document):
+    """Build a readable, paginated preview when Office conversion is absent.
+
+    The fallback intentionally uses the already parsed IR instead of returning
+    zero pages.  PyMuPDF's built-in CJK font keeps it portable across Windows
+    development machines and the Linux worker image.
+    """
+    import pymupdf
+    from PIL import Image
+
+    spans = [span for span in document.spans if span.raw_text and span.raw_text.strip()]
+    if not spans:
+        return []
+
+    width, height = 595, 842
+    margin_x, top, bottom = 54, 64, 48
+    font_name = "china-s"
+    pdf = pymupdf.open()
+    page = None
+    y = top
+
+    def new_page():
+        nonlocal page, y
+        page = pdf.new_page(width=width, height=height)
+        page.draw_rect(pymupdf.Rect(0, 0, width, 36), color=None, fill=(.95, .97, .97))
+        page.insert_text((margin_x, 23), "简历原文 · 安全文本预览", fontname=font_name, fontsize=9.5, color=(.19, .38, .38))
+        y = top
+
+    new_page()
+    for span in spans:
+        raw = masked(span.raw_text or "")
+        if span.is_sensitive or not raw.strip("█ \n\t"):
+            raw = "隐私字段已隐藏"
+        is_heading = span.span_kind == "heading"
+        font_size = 13 if is_heading else 10.5
+        line_height = 19 if is_heading else 16
+        before = 8 if is_heading else 3
+        after = 5 if is_heading else 4
+        lines = _wrapped_lines(raw, width - margin_x * 2, font_name, font_size)
+        needed = before + max(1, len(lines)) * line_height + after
+        if y + needed > height - bottom:
+            new_page()
+        y += before
+        color = (.10, .22, .27) if is_heading else (.20, .27, .31)
+        for line in lines:
+            if y + line_height > height - bottom:
+                new_page()
+            if line:
+                page.insert_text((margin_x, y), line, fontname=font_name, fontsize=font_size, color=color)
+            y += line_height
+        y += after
+
+    pages = []
+    for page_no, source_page in enumerate(pdf, 1):
+        pix = source_page.get_pixmap(matrix=pymupdf.Matrix(2.4, 2.4), alpha=False, annots=False)
+        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        pages.append((page_no, _encoded(image), None))
+    pdf.close()
+    return pages
+
+
 def render_preview(path, mime, document, avatar_allowed):
     if mime.startswith("image/"):
         from PIL import Image
@@ -157,14 +241,18 @@ def render_preview(path, mime, document, avatar_allowed):
         return [(1, content, photo_page)], avatar
     if mime == "application/pdf":
         return _pdf(path, document, avatar_allowed)
-    if not (shutil.which("libreoffice") or shutil.which("soffice")):
-        return [], None
+    office = shutil.which("libreoffice") or shutil.which("soffice")
+    if not office:
+        return _text_preview(document), None
     with TemporaryDirectory(prefix="resume-word-preview-") as directory:
-        subprocess.run([sys.executable, "-m", "app.parsing.doc_convert", path, directory, "pdf"],
-                       timeout=90, check=True, capture_output=True)
-        converted = str(Path(directory) / (Path(path).stem + ".pdf"))
-        mapped = pipeline.enrich_pdf_with_ocr(pipeline.parse_pdf(converted), converted)
-        for page in mapped.pages[:MAX_PAGES]:
-            if page.page_no not in mapped.meta.get("ocr_pages", []):
-                mapped.spans.extend(pipeline.detect_photo_on_pdf_page(converted, page.page_no))
-        return _pdf(converted, mapped, avatar_allowed)
+        try:
+            subprocess.run([sys.executable, "-m", "app.parsing.doc_convert", path, directory, "pdf"],
+                           timeout=90, check=True, capture_output=True)
+            converted = str(Path(directory) / (Path(path).stem + ".pdf"))
+            mapped = pipeline.enrich_pdf_with_ocr(pipeline.parse_pdf(converted), converted)
+            for page in mapped.pages[:MAX_PAGES]:
+                if page.page_no not in mapped.meta.get("ocr_pages", []):
+                    mapped.spans.extend(pipeline.detect_photo_on_pdf_page(converted, page.page_no))
+            return _pdf(converted, mapped, avatar_allowed)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            return _text_preview(document), None

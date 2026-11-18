@@ -136,11 +136,26 @@ const profileName=computed(()=>selected.value?.name || `申请 #${selected.value
           <footer class="candidate-job-pagination"><span>每页</span><ElSelect v-model="size" size="small" aria-label="每页候选人数"><ElOption v-for="option in [10,20,30,50]" :key="option" :label="option+' 条'" :value="option"/></ElSelect><ElPagination v-model:current-page="page" :page-size="size" :total="data.total" :pager-count="5" layout="total, prev, pager, next"/></footer>
         </section>
         <aside class="hire-surface explain-report" aria-label="可解释匹配报告">
-          <header class="report-title"><div><span class="report-eyebrow">可解释匹配报告</span><h2>{{ profileName }}</h2></div><ElTag size="small" type="info" effect="plain">演示数据</ElTag></header>
-          <p class="report-disclaimer">仅展示报告版式；评分模型和证据校准尚未接入。</p>
-          <div class="match-chart-wrap"><svg viewBox="0 0 240 240" class="match-chart" role="img" aria-label="四维匹配度与最终匹配度示意图"><path v-for="dimension in chartDimensions" :key="dimension.key+'-base'" :class="{dimmed:hoverPenalty && hoverPenalty!==dimension.key}" :d="arc(83,dimension.start+1,dimension.end-1)" fill="none" :stroke="dimension.pale" stroke-width="20"/><path v-for="dimension in chartDimensions" :key="dimension.key+'-fill'" :class="{dimmed:hoverPenalty && hoverPenalty!==dimension.key}" :d="arc(83,dimension.start+1,Math.max(dimension.start+1.01,dimension.fillEnd-1))" fill="none" :stroke="dimension.color" stroke-width="20"/><path :d="arc(104,0,360*penaltyLoss)" fill="none" stroke="#C0504D" stroke-width="3.5" stroke-linecap="round"/><circle cx="120" cy="120" r="56" fill="white" stroke="#eee" stroke-width="10"/><path :d="arc(56,0,360*finalScore/100)" fill="none" :stroke="finalColor" stroke-width="10" stroke-linecap="round"/><g v-for="dimension in chartDimensions" :key="dimension.key+'-label'" class="chart-label"><text :x="dimension.labelPosition.x" :y="dimension.labelPosition.y-4" text-anchor="middle">{{ dimension.label }}</text><text :x="dimension.labelPosition.x" :y="dimension.labelPosition.y+11" text-anchor="middle" class="chart-score">{{ dimension.score }}</text></g><text x="120" y="112" class="chart-final" text-anchor="middle" :fill="finalColor">{{ finalScore }}</text><text x="120" y="129" class="chart-base" text-anchor="middle">基础分 {{ baseScore }}</text><text x="120" y="142" class="chart-penalty" text-anchor="middle">扣分 −{{ penaltyLossAmount }}（×{{ penaltyFactor }}）</text></svg></div>
-          <section class="dimension-list" aria-label="分维度证据"><article v-for="dimension in dimensions" :key="dimension.key" class="dimension-row" :class="{linked:hoverPenalty===dimension.key}" :style="{'--dimension-color':dimension.color,'--dimension-pale':dimension.pale}"><span class="dimension-dot"></span><div><strong>{{ dimension.label }} {{ dimension.score }}</strong><small>权重 {{ Math.round(dimension.weight*100) }}% · {{ dimension.evidence.join('、') }}</small></div></article></section>
-          <section class="penalty-list" aria-label="硬性条件核对"><h3>硬性条件核对</h3><p v-for="item in penalties" :key="item.label" @mouseenter="hoverPenalty=item.linked" @mouseleave="hoverPenalty=undefined">× {{ item.label }}：{{ item.detail }} <b>{{ item.severity }} ×{{ item.factor }}</b></p></section>
+          <header class="report-title">
+            <div><span class="report-eyebrow">可解释匹配报告</span><h2>{{ profileName }}</h2></div>
+            <span class="report-status"><i></i>报告预览</span>
+          </header>
+          <div class="report-scroll">
+            <p class="report-disclaimer">用岗位要求逐项核对简历证据，分数越高表示当前证据越充分。</p>
+            <section class="report-overview" aria-label="综合匹配分">
+              <div class="match-chart-wrap"><svg viewBox="0 0 240 240" class="match-chart" role="img" aria-label="四维匹配度与最终匹配度示意图"><path v-for="dimension in chartDimensions" :key="dimension.key+'-base'" :class="{dimmed:hoverPenalty && hoverPenalty!==dimension.key}" :d="arc(83,dimension.start+1,dimension.end-1)" fill="none" :stroke="dimension.pale" stroke-width="20"/><path v-for="dimension in chartDimensions" :key="dimension.key+'-fill'" :class="{dimmed:hoverPenalty && hoverPenalty!==dimension.key}" :d="arc(83,dimension.start+1,Math.max(dimension.start+1.01,dimension.fillEnd-1))" fill="none" :stroke="dimension.color" stroke-width="20"/><path :d="arc(104,0,360*penaltyLoss)" fill="none" stroke="#C0504D" stroke-width="3.5" stroke-linecap="round"/><circle cx="120" cy="120" r="56" fill="white" stroke="#eee" stroke-width="10"/><path :d="arc(56,0,360*finalScore/100)" fill="none" :stroke="finalColor" stroke-width="10" stroke-linecap="round"/><g v-for="dimension in chartDimensions" :key="dimension.key+'-label'" class="chart-label"><text :x="dimension.labelPosition.x" :y="dimension.labelPosition.y-4" text-anchor="middle">{{ dimension.label }}</text><text :x="dimension.labelPosition.x" :y="dimension.labelPosition.y+11" text-anchor="middle" class="chart-score">{{ dimension.score }}</text></g><text x="120" y="112" class="chart-final" text-anchor="middle" :fill="finalColor">{{ finalScore }}</text><text x="120" y="129" class="chart-base" text-anchor="middle">最终匹配分</text><text x="120" y="142" class="chart-penalty" text-anchor="middle">基础 {{ baseScore }} · 扣 {{ penaltyLossAmount }}</text></svg></div>
+              <div class="score-summary"><span>岗位基础分</span><strong>{{ baseScore }}</strong><small>硬性条件系数 ×{{ penaltyFactor }}</small></div>
+            </section>
+            <section class="dimension-list" aria-label="分维度证据">
+              <div class="report-section-heading"><h3>分项证据</h3><span>共 {{ dimensions.length }} 项</span></div>
+              <article v-for="dimension in dimensions" :key="dimension.key" class="dimension-row" :class="{linked:hoverPenalty===dimension.key}" :style="{'--dimension-color':dimension.color,'--dimension-pale':dimension.pale}">
+                <div class="dimension-heading"><span class="dimension-label"><i class="dimension-dot"></i>{{ dimension.label }}</span><strong>{{ dimension.score }}<small>/100</small></strong></div>
+                <div class="dimension-progress" role="progressbar" :aria-label="dimension.label+'匹配分'" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="dimension.score"><i :style="{width:dimension.score+'%'}"></i></div>
+                <p>权重 {{ Math.round(dimension.weight*100) }}%</p><small>{{ dimension.evidence.join(' · ') }}</small>
+              </article>
+            </section>
+            <section class="penalty-list" aria-label="硬性条件核对"><div class="report-section-heading"><h3>硬性条件核对</h3><span>{{ penalties.length }} 项待确认</span></div><p v-for="item in penalties" :key="item.label" @mouseenter="hoverPenalty=item.linked" @mouseleave="hoverPenalty=undefined"><span>×</span><span><strong>{{ item.label }}</strong>{{ item.detail }}</span><b>{{ item.severity }} · ×{{ item.factor }}</b></p></section>
+          </div>
         </aside>
       </section>
     </template>
@@ -149,4 +164,89 @@ const profileName=computed(()=>selected.value?.name || `申请 #${selected.value
 
 <style scoped>
 .job-candidates-heading{margin-bottom:9px}.job-heading-actions,.candidate-list-actions{display:flex;align-items:center;gap:8px}.job-heading-actions :deep(.el-button),.candidate-list-actions :deep(.el-button){width:31px;height:31px;padding:0}.job-heading-actions :deep(svg),.candidate-list-actions :deep(svg){width:16px;height:16px}.candidate-job-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;padding:15px 17px;margin-bottom:14px}.candidate-job-summary>div{display:grid;gap:6px;align-content:start}.candidate-job-summary span{font-size:12px;color:var(--hire-muted)}.candidate-job-summary strong{font-size:13px}.job-tags{display:flex;gap:5px;flex-wrap:wrap}.candidate-workbench{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,375px);gap:14px;align-items:start}.candidate-job-list{overflow:hidden}.candidates-title{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 17px;border-bottom:1px solid var(--hire-line)}.candidates-title h2{font-size:16px}.candidates-title h2 span:not(.el-tag),.candidates-title p{color:var(--hire-muted);font-size:12px;font-weight:400}.candidates-title p{margin-top:5px;line-height:1.45}.candidate-grid-head,.candidate-row{display:grid;grid-template-columns:minmax(142px,1.12fr) minmax(124px,.95fr) minmax(110px,.84fr) minmax(106px,.85fr) minmax(135px,1.05fr);gap:13px;align-items:center}.candidate-grid-head{padding:9px 17px;background:#f7f9fa;color:var(--hire-muted);font-size:12px}.candidate-row{width:100%;padding:12px 17px;border:0;border-bottom:1px solid #edf1f3;background:white;text-align:left;cursor:pointer;transition:background-color .14s ease,box-shadow .14s ease}.candidate-row:hover,.candidate-row:focus-visible{background:#f6fbfa;outline:none}.candidate-row.selected{background:#eff8f6;box-shadow:inset 3px 0 var(--hire-accent)}.candidate-person{display:flex;gap:9px;align-items:flex-start;min-width:0}.candidate-order{width:19px;height:19px;display:grid;place-items:center;flex:none;border-radius:50%;background:#eef3f3;color:#597170;font-size:11px;font-variant-numeric:tabular-nums;margin-top:1px}.candidate-name{border:0;padding:0;background:none;color:var(--hire-ink);font:650 13px/1.35 inherit;cursor:pointer;text-decoration:none}.candidate-name:hover{color:var(--hire-accent-dark)}.candidate-person small,.candidate-education small,.candidate-followup small{display:block;color:var(--hire-muted);font-size:11px;margin-top:3px;line-height:1.3}.candidate-education{min-width:0}.candidate-education strong{font-size:13px}.school-tier-tags{display:flex;gap:3px;flex-wrap:wrap;margin-top:3px}.school-tier-tags :deep(.el-tag){height:18px;padding:0 4px;border-radius:3px;font-size:10px}.candidate-company,.candidate-followup{font-size:12px;line-height:1.45;overflow-wrap:anywhere}.candidate-progress{min-width:0}.candidate-progress :deep(.el-progress-bar__outer){background:#e7efed}.candidate-followup .is-empty{color:var(--hire-muted)}.candidate-job-pagination{display:flex;align-items:center;justify-content:flex-end;gap:7px;padding:11px 15px;font-size:12px;color:var(--hire-muted)}.candidate-job-pagination :deep(.el-select){width:76px}.explain-report{padding:15px;position:sticky;top:12px}.report-title{display:flex;align-items:start;justify-content:space-between;gap:8px}.report-eyebrow{display:block;color:var(--hire-accent-dark);font-size:11px;font-weight:650;letter-spacing:.06em}.report-title h2{font-size:16px;margin-top:2px}.report-disclaimer{margin-top:6px;color:var(--hire-muted);font-size:11px;line-height:1.45}.match-chart-wrap{display:grid;place-items:center;margin:2px auto -2px}.match-chart{width:min(100%,248px);overflow:visible}.match-chart path{transition:opacity .15s ease}.match-chart path.dimmed{opacity:.3}.chart-label{font-size:10px;fill:#465767;font-weight:650}.chart-score{font-size:12px;fill:#202c3b}.chart-final{font-size:25px;font-weight:720}.chart-base{font-size:10px;fill:#677585}.chart-penalty{font-size:9px;fill:#C0504D;font-weight:650}.dimension-list{display:grid;gap:5px;margin-top:10px}.dimension-row{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border:1px solid #edf0f2;border-radius:7px;transition:border-color .15s ease,background-color .15s ease}.dimension-row.linked{border-color:var(--dimension-color);background:var(--dimension-pale)}.dimension-dot{display:block;width:7px;height:7px;flex:none;border-radius:50%;background:var(--dimension-color);margin-top:5px}.dimension-row strong{display:block;font-size:12px}.dimension-row small{display:block;margin-top:2px;font-size:11px;line-height:1.35;color:var(--hire-muted)}.penalty-list{border-top:1px solid var(--hire-line);margin-top:12px;padding-top:10px}.penalty-list h3{font-size:12px;margin-bottom:5px}.penalty-list p{color:#885450;font-size:11px;line-height:1.55;cursor:default}.penalty-list b{color:#bd534f;font-weight:650}@media(max-width:1120px){.candidate-workbench{grid-template-columns:1fr}.explain-report{position:static;display:grid;grid-template-columns:minmax(220px,.9fr) minmax(260px,1.1fr);column-gap:14px}.report-title,.report-disclaimer{grid-column:1/-1}.match-chart-wrap{grid-column:1}.dimension-list{grid-column:2;grid-row:3/4;align-self:center}.penalty-list{grid-column:1/-1}}@media(max-width:760px){.candidate-job-summary{grid-template-columns:1fr;gap:11px}.candidate-grid-head{display:none}.candidate-row{grid-template-columns:1fr 1fr;gap:10px}.candidate-progress{grid-column:1/-1;grid-row:3}.candidate-followup{grid-column:1/-1;grid-row:4;border-top:1px dashed #dce5e4;padding-top:7px}.candidate-job-pagination{justify-content:flex-start;flex-wrap:wrap}.explain-report{display:block}.dimension-list{margin-top:10px}.candidate-company{display:none}}
+</style>
+<style scoped>
+.job-candidates-page { width:100%;max-width:none; }
+.candidate-job-summary {
+  border-color:#d9e7e7;
+  background:linear-gradient(135deg,rgba(255,255,255,.98),rgba(246,251,250,.98));
+}
+.candidate-job-summary > div {
+  position:relative;
+  padding-inline-start:11px;
+}
+.candidate-job-summary > div::before {
+  content:'';
+  position:absolute;
+  inset:2px auto 2px 0;
+  width:3px;
+  border-radius:3px;
+  background:linear-gradient(180deg,var(--hire-accent),#6b7fdd);
+  opacity:.58;
+}
+.candidate-row { transition:background-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast),transform var(--rs-motion-fast) var(--rs-ease); }
+.candidate-row:hover,.candidate-row:focus-visible { background:#f2faf8;transform:translateX(2px); }
+.candidate-row.selected { background:linear-gradient(90deg,#e9f8f4,#f8fcfb);box-shadow:inset 3px 0 var(--hire-accent),inset 12px 0 24px rgba(13,137,126,.035); }
+.candidate-order { background:linear-gradient(135deg,#edf5f4,#f1f2fb);color:var(--hire-accent-dark); }
+.candidate-workbench { grid-template-columns:minmax(680px,1fr) clamp(440px,31vw,530px);gap:18px; }
+.candidate-job-list { min-height:calc(100dvh - var(--rs-header-height) - 190px); }
+.explain-report {
+  display:flex;flex-direction:column;height:calc(100dvh - var(--rs-header-height) - 24px);min-height:min(620px,calc(100dvh - var(--rs-header-height) - 24px));max-height:calc(100dvh - var(--rs-header-height) - 24px);
+  padding:0;overflow:hidden;border-color:#d6e7e4;box-shadow:0 14px 38px rgba(18,50,61,.09);
+}
+.report-title { flex:none;padding:17px 18px 14px;border-bottom:1px solid #e4ecec;background:linear-gradient(180deg,#fff,#fbfdfd); }
+.report-title h2 { max-width:290px;margin-top:3px;overflow:hidden;color:#18343c;font-size:17px;text-overflow:ellipsis;white-space:nowrap; }
+.report-eyebrow { color:#157f75;font-size:10px;letter-spacing:.1em;text-transform:uppercase; }
+.report-status { display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid #d7e7e4;border-radius:999px;background:#f3faf8;color:#4d6b69;font-size:11px; }
+.report-status i { width:6px;height:6px;border-radius:50%;background:#22a696;box-shadow:0 0 0 3px rgba(34,166,150,.12); }
+.report-scroll { flex:1;min-height:0;overflow:auto;padding:14px 16px 18px;scrollbar-width:thin;scrollbar-color:#b7cbc8 transparent; }
+.report-disclaimer { margin:0 0 12px;padding:9px 11px;border:1px solid #e1ecea;border-radius:9px;background:#f6faf9;color:#5f7479;font-size:11px;line-height:1.5; }
+.report-overview { position:relative;display:grid;grid-template-columns:minmax(0,1fr) 124px;align-items:center;min-height:250px;padding:5px 10px 5px 4px;overflow:hidden;border:1px solid #e0e9e9;border-radius:14px;background:radial-gradient(circle at 30% 38%,#fff 0,#f7fbfa 56%,#f1f7f6 100%); }
+.report-overview::after { content:'';position:absolute;right:-50px;bottom:-70px;width:170px;height:170px;border:1px solid rgba(29,149,137,.12);border-radius:50%;box-shadow:0 0 0 24px rgba(29,149,137,.025);pointer-events:none; }
+.match-chart-wrap { margin:0; }
+.match-chart { width:min(100%,270px);filter:drop-shadow(0 8px 16px rgba(25,66,71,.055)); }
+.score-summary { position:relative;z-index:1;display:grid;align-content:center;gap:2px;padding:15px 13px;border:1px solid rgba(208,226,223,.95);border-radius:11px;background:rgba(255,255,255,.88);box-shadow:0 7px 20px rgba(25,65,70,.055); }
+.score-summary span,.score-summary small { color:var(--hire-muted);font-size:10px;line-height:1.4; }
+.score-summary strong { color:#1b4f4a;font-size:25px;line-height:1.15;font-variant-numeric:tabular-nums; }
+.report-section-heading { display:flex;align-items:center;justify-content:space-between;gap:12px;margin:2px 1px 7px; }
+.report-section-heading h3 { color:#294049;font-size:12px; }
+.report-section-heading span { color:var(--hire-muted);font-size:10px; }
+.dimension-list { gap:8px;margin-top:14px; }
+.dimension-row { display:block;padding:10px 11px 11px;border:1px solid #e5ecec;border-radius:11px;background:#fff;transition:border-color var(--rs-motion-fast),background-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast); }
+.dimension-row:hover,.dimension-row.linked { border-color:var(--dimension-color);background:linear-gradient(135deg,#fff,var(--dimension-pale));box-shadow:0 5px 14px rgba(28,65,72,.055);transform:none; }
+.dimension-heading { display:flex;align-items:center;justify-content:space-between;gap:10px; }
+.dimension-label { display:inline-flex;align-items:center;gap:7px;color:#2a414a;font-size:12px;font-weight:680; }
+.dimension-dot { width:7px;height:7px;margin:0;border-radius:50%;background:var(--dimension-color);box-shadow:0 0 0 3px var(--dimension-pale); }
+.dimension-heading strong { color:var(--dimension-color);font-size:15px;font-variant-numeric:tabular-nums; }
+.dimension-heading strong small { display:inline;margin:0 0 0 2px;color:#8b9a9f;font-size:9px;font-weight:500; }
+.dimension-progress { height:5px;margin:8px 0 7px;overflow:hidden;border-radius:999px;background:var(--dimension-pale); }
+.dimension-progress i { display:block;height:100%;border-radius:inherit;background:var(--dimension-color);box-shadow:0 0 8px var(--dimension-color);transition:width .45s var(--rs-ease); }
+.dimension-row>p { margin:0 0 2px;color:#829095;font-size:10px; }
+.dimension-row>small { display:block;margin:0;color:#556a71;font-size:11px;line-height:1.45; }
+.penalty-list { margin-top:14px;padding-top:12px; }
+.penalty-list>p { display:grid;grid-template-columns:17px minmax(0,1fr) auto;align-items:start;gap:7px;margin-top:6px;padding:9px 10px;border:1px solid #f0dedd;border-radius:9px;background:#fff9f8;color:#765a58;line-height:1.4; }
+.penalty-list>p>span:first-child { display:grid;place-items:center;width:17px;height:17px;border-radius:50%;background:#f9e4e1;color:#bc534e;font-weight:750; }
+.penalty-list>p>span:nth-child(2) { display:grid;gap:2px;font-size:10px; }
+.penalty-list>p strong { color:#714c49;font-size:11px; }
+.penalty-list b { align-self:center;padding:3px 6px;border-radius:5px;background:#f9e8e5;color:#a94d49;font-size:9px;white-space:nowrap; }
+@media(max-width:1460px) {
+  .candidate-workbench { grid-template-columns:1fr; }
+  .explain-report { position:static;height:auto;min-height:0;max-height:none; }
+  .report-scroll { display:grid;grid-template-columns:minmax(380px,.9fr) minmax(420px,1.1fr);gap:14px 18px;overflow:visible; }
+  .report-disclaimer { grid-column:1/-1;margin:0; }
+  .report-overview { grid-column:1;grid-row:2/4; }
+  .dimension-list { grid-column:2;grid-row:2;margin-top:0; }
+  .penalty-list { grid-column:2;grid-row:3;margin-top:0;padding-top:10px; }
+}
+@media(max-width:930px) {
+  .report-scroll { display:block; }
+  .report-overview { margin-top:12px; }
+}
+@media(max-width:760px) {
+  .candidate-workbench { display:block; }
+  .explain-report { margin-top:14px; }
+  .report-overview { grid-template-columns:1fr; }
+  .score-summary { display:none; }
+  .report-title h2 { max-width:190px; }
+}
 </style>

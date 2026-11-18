@@ -268,18 +268,19 @@ onMounted(load)
 
 <style scoped>
 .user-metrics,.organization-forms {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:13px}
-.user-metric {display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:15px 17px;border-radius:12px;min-width:0}
+.user-metric {display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:16px 18px;border-radius:14px;min-width:0;transition:transform var(--rs-motion-panel) var(--rs-ease),box-shadow var(--rs-motion-fast)}
+.user-metric:hover {transform:translateY(-2px);box-shadow:var(--rs-shadow-md)}
 .user-metric>div {display:grid;gap:5px;color:var(--hire-muted);font-size:13px}
 .user-metric strong {color:var(--hire-ink);font-size:28px;font-variant-numeric:tabular-nums;line-height:1.12}
 .user-metric small {font-size:11px;color:#647588}
-.metric-icon {display:grid;place-items:center;width:42px;height:42px;border-radius:10px;background:#eaf7f3;color:#126559;flex:none}
+.metric-icon {display:grid;place-items:center;width:43px;height:43px;border:1px solid #d6ebe7;border-radius:12px;background:linear-gradient(135deg,#e7f7f3,#f4fbf9);color:#126559;flex:none;box-shadow:0 6px 15px rgba(18,101,89,.08)}
 .metric-icon[data-tone=green] {background:#eaf6ed;color:#2c6d4d}
 .metric-icon[data-tone=blue] {background:#edf3fb;color:#3d608f}
 .metric-icon svg {width:21px;height:21px}
-.user-nav {display:inline-flex;gap:4px;margin:1px 0 11px;padding:3px;border:1px solid #e0e8ed;background:#eaf0f3;border-radius:9px}
-.user-nav button {display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:13px;padding:6px 11px;border-radius:6px;border:1px solid transparent;background:transparent;cursor:pointer;color:#4e6475}
+.user-nav {display:inline-flex;gap:4px;margin:1px 0 12px;padding:4px;border:1px solid #dce7e9;background:#eaf1f2;border-radius:10px}
+.user-nav button {display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:13px;padding:7px 12px;border-radius:7px;border:1px solid transparent;background:transparent;cursor:pointer;color:#4e6475;transition:background-color var(--rs-motion-fast),color var(--rs-motion-fast),box-shadow var(--rs-motion-fast)}
 .user-nav button svg {width:15px;height:15px}
-.user-nav button[aria-pressed=true] {background:white;border-color:#dce7e9;color:var(--hire-accent-dark);font-weight:650;box-shadow:0 1px 2px #203c4c14}
+.user-nav button[aria-pressed=true] {background:white;border-color:#d6e5e5;color:var(--hire-accent-dark);font-weight:650;box-shadow:0 3px 10px rgba(20,60,68,.08)}
 .directory-table {overflow:hidden}
 .directory-table :deep(.el-table) {--el-table-border-color:var(--hire-line);--el-table-row-hover-bg-color:#eff7f4;font-size:13px}
 .directory-intro {display:flex;align-items:center;justify-content:space-between;gap:10px;padding:15px 17px 0}
@@ -295,7 +296,7 @@ onMounted(load)
 .account-identity strong,.account-identity small {display:block;line-height:1.5;overflow-wrap:anywhere}
 .account-identity strong {font-size:13px;color:var(--hire-ink);font-weight:650}
 .account-identity small {font-size:12px;color:#647588}
-.directory-avatar {display:grid;place-items:center;flex:none;width:34px;height:34px;border-radius:8px;background:#edf3fa;color:#476388;font-size:12px;font-weight:650}
+.directory-avatar {display:grid;place-items:center;flex:none;width:35px;height:35px;border-radius:10px;background:linear-gradient(135deg,#edf3fa,#f2f1ff);color:#476388;font-size:12px;font-weight:650}
 .directory-avatar.admin-avatar {background:#e7f5ef;color:#116858}
 .department-tags {display:flex;flex-wrap:wrap;gap:4px}
 .user-tag {display:inline-block;padding:2px 7px;border:1px solid #dce5ea;border-radius:4px;
@@ -305,10 +306,10 @@ onMounted(load)
 .user-status::before {content:"";width:7px;height:7px;border-radius:50%;background:#8a99a7}
 .user-status.active-status {color:#17624b;background:#eaf6ed}
 .user-status.active-status::before {background:#3a9671}
-.manage-account {display:inline-flex;align-items:center;gap:5px;padding:5px 8px;border:1px solid #dce7eb;border-radius:6px;
-  background:white;color:var(--hire-accent-dark);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.manage-account {display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid #d4e5e4;border-radius:7px;
+  background:white;color:var(--hire-accent-dark);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;transition:background-color var(--rs-motion-fast),border-color var(--rs-motion-fast),transform var(--rs-motion-fast)}
 .manage-account svg,.remove-account svg {height:13px;width:13px}
-.manage-account:hover {background:#eaf7f3;border-color:#b9d9d0}
+.manage-account:hover {background:#eaf7f3;border-color:#9ccbc4;transform:translateY(-1px)}
 .current-account {color:#647588;font-size:12px;white-space:nowrap}
 .remove-account {color:#9a3440;gap:5px}
 :deep(.el-dialog) {border-radius:14px}

@@ -68,7 +68,7 @@ def process_resume(version_id: int):
             pd.meta["has_photo"] = any(s.span_kind == "photo" for s in pd.spans)
             pd.finalize()
 
-        # ⑤ 脱敏预览（图片简历整页 / PDF 首页渲染；DOCX v1 无预览图）
+        # ⑤ 脱敏预览（图片/PDF 保留版式；DOCX 无 Office 时生成安全文本预览）
         pd.finalize()
         with owner_engine.connect() as cn:
             allowed = set(cn.execute(text("""

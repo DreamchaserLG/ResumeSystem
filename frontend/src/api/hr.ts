@@ -1,6 +1,6 @@
 import { api } from './client'
 
-export interface Department { id: number; name: string }
+export interface Department { id: number; name: string; company_id?: number; company_name?: string }
 export const jobStatusOptions = [
   { value: 'paused', label: '未开始' },
   { value: 'open', label: '进行中' },
@@ -10,7 +10,8 @@ export const jobStatusLabel = (value: string) => jobStatusOptions.find(option =>
 export interface InterviewRound { id: number; name: string; position: number }
 export type StageCode = 'review' | 'progress' | 'interview' | 'rejected' | 'hired'
 export interface Stage { code: StageCode; label: string; round_id: number | null }
-export interface Job { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; planned_headcount: number | null; target_date: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[] }
+export interface HiringRequirements { requirements:string; required_skills:string[]; experience_tags:string[]; recruitment_start:string|null; recruitment_end:string|null }
+export interface Job extends HiringRequirements { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; planned_headcount: number | null; target_date: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[]; company_id: number; company_name: string; recruitment_type: string; recruiter_name: string; updated_at: string }
 export type TransferJob = Pick<Job, 'id' | 'title' | 'department_id' | 'department_name'>
 export const stagesFor = (rounds: InterviewRound[] = []): Stage[] => [
   { code: 'review', label: '待审核', round_id: null },
@@ -75,6 +76,13 @@ export interface ResumeTag {
 export interface ResumeCard {
   id: number; version_id: number | null; job_id: number; job_title: string; name: string | null
   target_role: string | null; gender: string | null; city: string | null; address: string | null; phone: string | null
-  status: string; stage: Stage; workflow_version: number; parse_status: string; page_count: number; has_avatar: boolean; tags: ResumeTag[]
+  status: string; stage: Stage; workflow_version: number; parse_status: string; page_count: number; has_avatar: boolean; tags: ResumeTag[]; latest_note?: string | null; salary_midpoint?: number | null; recent_company?: string | null; current_company?: string | null
 }
-export interface ResumeCardPage { items: ResumeCard[]; total: number; page: number; size: number; school_filters: boolean }
+export interface ResumeCardPage { items: ResumeCard[]; total: number; page: number; size: number; school_filters: boolean; available_facets?: string[] }
+
+
+export interface JobCandidatePage extends Omit<ResumeCardPage,'items'> {
+  job: Pick<Job,'id'|'title'|'status'|'department_name'|'requirements'|'required_skills'|'experience_tags'|'recruitment_start'|'recruitment_end'|'target_date'>
+  items: (ResumeCard & {match_percent:number|null})[]
+  matched_requirements:number
+}

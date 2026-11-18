@@ -402,7 +402,7 @@ const pins=computed(()=>{
 .atlas-table thead th { background:#edf4fa; position:sticky; top:0; z-index:1; white-space:nowrap; }
 .atlas-table td:not(:first-child) { white-space:nowrap; font-variant-numeric:tabular-nums; }
 .atlas-table td button,.map-path button { cursor:pointer; background:none; border:0; padding:3px 0; color:#225a8b; text-align:left; }
-.atlas-table td button:hover,.map-path button:hover { text-decoration:underline; }
+.atlas-table td button:hover,.map-path button:hover { text-decoration:none; }
 .atlas-table td small { display:block; font-size:10px; color:#5c4c87; }
 .map-panel { padding:12px; }
 .map-heading { display:flex; justify-content:space-between; align-items:flex-end; gap:8px; margin-bottom:8px; }

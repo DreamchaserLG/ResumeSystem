@@ -2,13 +2,14 @@
 
 授权变更（grant/revoke）必须 bump_perm_version（02 §3）并写审计。
 """
+import re
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from app.core.audit import write_audit
 from app.core.auth import AuthContext, require_super_admin
 from app.core.db import owner_engine, rls_session
 from app.core.extraction import masked, norm
@@ -24,6 +25,7 @@ class CreateUserIn(BaseModel):
     display_name: str = Field(min_length=1,max_length=80)
     email: str = Field(min_length=3,max_length=160)
     password: str = Field(min_length=8,max_length=128)
+    department_id: int | None = Field(default=None, gt=0)
 
 
 class GrantIn(BaseModel):
@@ -31,31 +33,100 @@ class GrantIn(BaseModel):
     department_id: int
 
 
+class UserStatusIn(BaseModel):
+    status: Literal["active", "disabled"]
+
+
 @router.post("/users")
 def create_user(body: CreateUserIn, auth: AuthContext = Depends(require_super_admin)):
-    # 超管上下文事务：app_user 的写策略要求 app_is_super_admin() 为真
+    name, email = body.display_name.strip(), body.email.strip().lower()
+    if not name or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(422, "请填写姓名与有效的邮箱")
     with rls_session(user_id=auth.user_id) as s:
-        exists = s.execute(
-            text("SELECT 1 FROM app_user WHERE email = :e"), {"e": body.email.strip().lower()}
-        ).fetchone()
-        if exists:
-            raise HTTPException(status_code=409, detail="邮箱已存在")
-        if len(body.password) < 8:
-            raise HTTPException(status_code=400, detail="密码至少 8 位")
-        row = s.execute(
-            text(
-                "INSERT INTO app_user (display_name, email, password_hash)"
-                " VALUES (:n, :e, :p) RETURNING id"
-            ),
-            {
-                "n": body.display_name,
-                "e": body.email.strip().lower(),
-                "p": hash_password(body.password),
-            },
-        ).fetchone()
-        new_id = row.id
-    write_audit(auth.user_id, "user_create", "user", body.email, detail={"new_user_id": new_id})
-    return {"user_id": new_id}
+        if body.department_id is not None and not s.execute(text(
+            "SELECT 1 FROM department WHERE id=:d AND status='active' FOR SHARE"
+        ), {"d": body.department_id}).first():
+            raise HTTPException(404, "部门不存在或已停用")
+        new_id = s.execute(text("""
+            INSERT INTO app_user(display_name,email,password_hash) VALUES(:name,:email,:password)
+            ON CONFLICT(email) DO NOTHING RETURNING id
+        """), {"name": name, "email": email, "password": hash_password(body.password)}).scalar_one_or_none()
+        if new_id is None:
+            raise HTTPException(409, "邮箱已存在")
+        audit(s, auth.user_id, "user_create", new_id, target_type="user")
+        if body.department_id is not None:
+            s.execute(text("""
+                INSERT INTO department_admin(department_id,user_id,granted_by) VALUES(:d,:u,:actor)
+            """), {"d": body.department_id, "u": new_id, "actor": auth.user_id})
+            audit(s, auth.user_id, "permission_grant", new_id, {"department_id": body.department_id}, "user")
+    return {"user_id": new_id, "department_id": body.department_id}
+
+
+def _lock_managed_account(connection, auth, user_id):
+    # Serialize demotions/deletions so the last active super administrator cannot be removed
+    # by two concurrent operations. Check the actor again after taking the lock.
+    connection.execute(text("SELECT pg_advisory_xact_lock(hashtext('resume:account-lifecycle'))"))
+    actor = connection.execute(text("""
+        SELECT u.perm_version FROM app_user u JOIN system_admin sa ON sa.user_id=u.id
+        WHERE u.id=:id AND u.status='active' FOR SHARE OF u
+    """), {"id": auth.user_id}).scalar_one_or_none()
+    if actor != auth.perm_version:
+        raise HTTPException(401, "账号权限已变更，请重新登录")
+    if user_id == auth.user_id:
+        raise HTTPException(409, "不能停用、启用或删除正在使用的账号")
+    row = connection.execute(text("""
+        SELECT u.status, EXISTS(SELECT 1 FROM system_admin sa WHERE sa.user_id=u.id) AS is_admin
+        FROM app_user u WHERE u.id=:id AND u.status<>'deleted' FOR UPDATE OF u
+    """), {"id": user_id}).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(404, "账号不存在或已删除")
+    if row["is_admin"] and row["status"] == "active" and not connection.execute(text("""
+        SELECT 1 FROM system_admin sa JOIN app_user u ON u.id=sa.user_id
+        WHERE sa.user_id<>:id AND u.status='active' LIMIT 1
+    """), {"id": user_id}).first():
+        raise HTTPException(409, "必须保留至少一个启用的超级管理员")
+    return row
+
+
+@router.put("/users/{user_id}/status")
+def set_user_status(user_id: int, body: UserStatusIn, auth: AuthContext = Depends(require_super_admin)):
+    with owner_engine.begin() as cn:
+        row = _lock_managed_account(cn, auth, user_id)
+        if row["status"] != body.status:
+            cn.execute(text("UPDATE app_user SET status=:status,perm_version=perm_version+1 WHERE id=:id"),
+                       {"id":user_id,"status":body.status})
+            audit(cn, auth.user_id, "user_status_change", user_id,
+                  {"from":row["status"],"to":body.status}, "user")
+    return {"id":user_id,"status":body.status}
+
+
+@router.delete("/users/{user_id}")
+def remove_user(user_id: int, auth: AuthContext = Depends(require_super_admin)):
+    with owner_engine.begin() as cn:
+        _lock_managed_account(cn, auth, user_id)
+        cn.execute(text("DELETE FROM department_admin WHERE user_id=:id"), {"id": user_id})
+        cn.execute(text("DELETE FROM system_admin WHERE user_id=:id"), {"id": user_id})
+        cn.execute(text("DELETE FROM resume_original_grant WHERE user_id=:id"), {"id": user_id})
+        cn.execute(text("DELETE FROM user_profile WHERE user_id=:id"), {"id": user_id})
+        cn.execute(text("""
+            UPDATE app_user SET status='deleted',email=:tombstone,password_hash='',perm_version=perm_version+1
+            WHERE id=:id
+        """), {"id":user_id,"tombstone":f"deleted-{uuid4().hex}@deleted.invalid"})
+        audit(cn, auth.user_id, "user_delete", user_id, target_type="user")
+    return {"ok":True}
+
+
+@router.get("/departments/{department_id}/accounts")
+def department_accounts(department_id: int, auth: AuthContext = Depends(require_super_admin)):
+    with rls_session(user_id=auth.user_id) as s:
+        if not s.execute(text("SELECT 1 FROM department WHERE id=:id"), {"id": department_id}).first():
+            raise HTTPException(404, "部门不存在")
+        rows = s.execute(text("""
+            SELECT u.id,u.display_name,u.email,u.status
+            FROM department_admin da JOIN app_user u ON u.id=da.user_id
+            WHERE da.department_id=:id AND u.status<>'deleted' ORDER BY u.display_name,u.id
+        """), {"id": department_id}).mappings()
+        return {"items": [dict(row) for row in rows]}
 
 
 @router.post("/grant-dept-hr")
@@ -67,7 +138,7 @@ def grant_dept_hr(body: GrantIn, auth: AuthContext = Depends(require_super_admin
         if dept is None:
             raise HTTPException(status_code=404, detail="部门不存在")
         user = s.execute(
-            text("SELECT email FROM app_user WHERE id = :u"), {"u": body.user_id}
+            text("SELECT email FROM app_user WHERE id = :u AND status<>'deleted' FOR UPDATE"), {"u": body.user_id}
         ).fetchone()
         if user is None:
             raise HTTPException(status_code=404, detail="用户不存在")
@@ -154,7 +225,7 @@ def settings(auth: AuthContext = Depends(require_super_admin)):
             "departments": "SELECT id,name,status FROM department ORDER BY id",
             "users": """SELECT u.id,u.display_name,u.email,u.status,exists(SELECT 1 FROM system_admin x WHERE x.user_id=u.id) AS super_admin,
                          ARRAY(SELECT d.department_id FROM department_admin d WHERE d.user_id=u.id ORDER BY d.department_id) AS departments
-                         FROM app_user u ORDER BY u.id""",
+                         FROM app_user u WHERE u.status<>'deleted' ORDER BY u.id""",
             "fields": """SELECT f.field_key,f.display_name,ARRAY(SELECT p.purpose FROM field_usage_policy p
                          JOIN search_state st USING(policy_version) WHERE p.field_key=f.field_key AND p.allowed ORDER BY p.purpose) AS purposes
                          FROM field_definition f WHERE f.status='active' ORDER BY f.field_key""",
@@ -165,6 +236,26 @@ def settings(auth: AuthContext = Depends(require_super_admin)):
             "school_filters": "SELECT job_id,tag_code,reason FROM job_school_filter ORDER BY job_id,tag_code",
         }
         return {key: [dict(row) for row in s.execute(text(query)).mappings()] for key, query in queries.items()}
+
+
+@router.get("/organization")
+def organization(auth: AuthContext = Depends(require_super_admin)):
+    with rls_session(user_id=auth.user_id) as s:
+        queries = {
+            "companies": "SELECT id,name,parent_id FROM recruiting_company ORDER BY parent_id NULLS FIRST,name,id",
+            "departments": """
+                SELECT d.id,d.name,d.status,d.company_id,c.name AS company_name
+                FROM department d JOIN recruiting_company c ON c.id=d.company_id ORDER BY c.name,d.name,d.id
+            """,
+            "users": """
+                SELECT u.id,u.display_name,u.email,u.status,(sa.user_id IS NOT NULL) AS super_admin,
+                    ARRAY(SELECT d.department_id FROM department_admin d WHERE d.user_id=u.id ORDER BY d.department_id) AS departments
+                FROM app_user u LEFT JOIN system_admin sa ON sa.user_id=u.id
+                WHERE u.status<>'deleted'
+                ORDER BY (sa.user_id IS NOT NULL) DESC,u.display_name,u.id
+            """,
+        }
+        return {key:[dict(row) for row in s.execute(text(query)).mappings()] for key,query in queries.items()}
 
 
 @router.post("/departments", status_code=201)

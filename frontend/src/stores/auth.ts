@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
-import { api } from '@/api/client'
+import { api, ApiError } from '@/api/client'
+import { clearSessionToken, getSessionToken, setSessionToken, takeoverNotice } from '@/api/session'
 
 export interface Session {
   userId: number
@@ -8,24 +9,57 @@ export interface Session {
   departmentName?: string
 }
 
+export interface SessionIdentity {
+  user_id: number
+  display_name: string
+  role: Session['role']
+  display_departments: string[]
+}
+
+export function sessionFromIdentity(identity:SessionIdentity):Session {
+  return {
+    userId:identity.user_id, displayName:identity.display_name, role:identity.role,
+    departmentName:identity.display_departments.join('、') || undefined,
+  }
+}
+
 export const useAuthStore = defineStore('auth', {
   state: () => ({
-    session: JSON.parse(localStorage.getItem('rs-session') ?? 'null') as Session | null,
+    session: null as Session | null,
+    resumeIssue: '' as ''|'taken-over'|'verify-failed',
   }),
   getters: {
-    isAuthed: (s) => !!s.session,
+    isAuthed: (s) => !!s.session && !!getSessionToken(),
     isSuperAdmin: (s) => s.session?.role === 'super_admin',
   },
   actions: {
-    setSession(s: Session) {
+    setSession(token: string, s: Session) {
+      setSessionToken(token)
       this.session = s
-      localStorage.setItem('rs-session', JSON.stringify(s))
+      this.resumeIssue = ''
+    },
+    async restoreSession() {
+      const token=getSessionToken()
+      if(!token || this.session) return
+      try {
+        const identity=await api.verifySession<SessionIdentity>()
+        if(token===getSessionToken()) this.setSession(token,sessionFromIdentity(identity))
+      } catch(error) {
+        if(token!==getSessionToken()) return
+        if(error instanceof ApiError && error.status===401) {
+          clearSessionToken()
+          this.resumeIssue=error.detail===takeoverNotice?'taken-over':''
+        } else this.resumeIssue='verify-failed'
+      }
+    },
+    updateDisplayName(displayName:string) {
+      if(this.session) this.session.displayName=displayName
     },
     logout() {
-      api.post('/auth/logout').catch(() => {})
+      if(getSessionToken()) api.post('/auth/logout').catch(() => {})
       this.session = null
-      localStorage.removeItem('rs-session')
-      localStorage.removeItem('rs-token')
+      this.resumeIssue = ''
+      clearSessionToken()
     },
   },
 })

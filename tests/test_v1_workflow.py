@@ -8,6 +8,7 @@ from sqlalchemy import text
 from app.api import uploads
 from app.core.db import owner_engine
 from app.main import app
+from conftest import sign_in
 from worker.tasks.parse import process_resume
 
 
@@ -21,7 +22,7 @@ def docx_bytes(lines):
 
 
 def login(client, email, password):
-    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    response = sign_in(client,{"email":email,"password":password})
     assert response.status_code == 200, response.text
     return {"X-Session-Token": response.json()["token"]}
 
@@ -55,7 +56,7 @@ def test_workflow_with_real_docx(monkeypatch):
         assert info["extractor_version"] == "rules-v3"
         assert "受限内容" not in initial.text
         assert client.get(base, headers=other).status_code == 404
-        assert client.get(base, headers=admin).status_code == 403
+        assert client.get(base, headers=admin).status_code == 200
         with owner_engine.connect() as conn:
             assert conn.execute(text("SELECT count(*) FROM resume_search_record WHERE version_id=:v"), {"v": version_id}).scalar_one() > 0
         query = {"job_id":1, "section":"work", "skill":"Go", "min_months":36, "keywords":["高并发","订单"]}

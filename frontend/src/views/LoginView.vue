@@ -1,26 +1,33 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useRouter } from "vue-router";
-import { NButton, NInput, NIcon, useMessage } from "naive-ui";
+import { useRoute, useRouter } from "vue-router";
+import { NButton, NInput, NIcon, NModal, useMessage } from "naive-ui";
 import {
   MailOutline,
   LockClosedOutline,
 } from "@vicons/ionicons5";
 import sorterConcept from "@/assets/resume-sorter-concept.webp";
-import { api } from "@/api/client";
-import { useAuthStore } from "@/stores/auth";
+import { api, ApiError } from "@/api/client";
+import { takeoverNotice } from "@/api/session";
+import { sessionFromIdentity, useAuthStore, type SessionIdentity } from "@/stores/auth";
 
 const router = useRouter();
+const route = useRoute();
 const message = useMessage();
 const auth = useAuthStore();
 
 const loading = ref(false);
-const form = ref({ username: "", password: "" });
+const form = ref<HTMLFormElement>();
+const showConflict = ref(false);
+const replacement = ref<string>();
+const retryRestore = () => location.reload();
 
-async function handleLogin() {
-  if (loading.value) return;
-  const email = form.value.username.trim();
-  if (!email || !form.value.password) {
+async function handleLogin(replace?:string) {
+  if (loading.value || !form.value) return;
+  const fields = new FormData(form.value);
+  const email = String(fields.get("username") || "").trim();
+  const password = String(fields.get("password") || "");
+  if (!email || !password) {
     message.warning("请输入企业邮箱与密码");
     return;
   }
@@ -28,28 +35,32 @@ async function handleLogin() {
   try {
     const resp = await api.post<{
       token: string;
-      session: {
-        user_id: number;
-        display_name: string;
-        email: string;
-        role: "super_admin" | "dept_hr";
-        departments: number[];
-        display_departments: string[];
-      };
+      session: SessionIdentity;
     }>("/auth/login", {
       email,
-      password: form.value.password,
+      password,
+      replace_login: replace,
     });
-    localStorage.setItem("rs-token", resp.token);
-    auth.setSession({
-      userId: resp.session.user_id,
-      displayName: resp.session.display_name,
-      role: resp.session.role,
-      departmentName: resp.session.display_departments.join("、") || undefined,
-    });
+    showConflict.value=false;
+    replacement.value=undefined;
+    auth.setSession(resp.token, sessionFromIdentity(resp.session));
     message.success("登录成功");
-    await router.replace("/dashboard");
+    const next = route.query.next;
+    const target = typeof next === "string" && next.startsWith("/") &&
+      !next.startsWith("//") && !next.includes("\\") && router.resolve(next).name !== "login"
+      ? next : "/jobs";
+    await router.replace(target);
   } catch (error) {
+    if (error instanceof ApiError && error.status === 409 && error.detail && typeof error.detail === "object") {
+      const detail = error.detail as {code?:string; replace_login?:string};
+      if (detail.code === "login_conflict" && detail.replace_login) {
+        replacement.value=detail.replace_login;
+        showConflict.value=true;
+        return;
+      }
+    }
+    showConflict.value=false;
+    replacement.value=undefined;
     message.error(error instanceof Error ? error.message : "登录失败，请检查企业邮箱与密码");
   } finally {
     loading.value = false;
@@ -80,16 +91,20 @@ async function handleLogin() {
         <h1 id="login-title">智能简历筛选系统</h1>
         <p class="login-subtitle">请使用企业账号登录</p>
 
-        <form class="login-form" @submit.prevent="handleLogin">
+        <p v-if="route.query.reason==='taken-over' || auth.resumeIssue==='taken-over'" class="login-notice" role="alert">{{ takeoverNotice }}</p>
+        <p v-else-if="auth.resumeIssue==='verify-failed'" class="login-notice" role="alert">暂时无法验证会话。
+          <button type="button" class="hire-inline-button" @click="retryRestore">重试</button>
+        </p>
+        <form ref="form" class="login-form" method="post" autocomplete="on" @submit.prevent="handleLogin()">
           <NInput
-            v-model:value="form.username" size="large" placeholder="企业邮箱"
-            :input-props="{ 'aria-label':'企业邮箱', autocomplete:'username', inputmode:'email', spellcheck:false }"
+            size="large" placeholder="企业邮箱"
+            :input-props="{ name:'username', 'aria-label':'企业邮箱', autocomplete:'username', inputmode:'email', spellcheck:false }"
           >
             <template #prefix><NIcon :component="MailOutline" class="input-icon" aria-hidden="true" /></template>
           </NInput>
           <NInput
-            v-model:value="form.password" size="large" type="password" show-password-on="click" placeholder="密码"
-            :input-props="{ 'aria-label':'密码', autocomplete:'current-password' }"
+            size="large" type="password" show-password-on="click" placeholder="密码"
+            :input-props="{ name:'password', 'aria-label':'密码', autocomplete:'current-password' }"
           >
             <template #prefix><NIcon :component="LockClosedOutline" class="input-icon" aria-hidden="true" /></template>
           </NInput>
@@ -99,6 +114,14 @@ async function handleLogin() {
         </form>
 
         <p class="login-help">账号由管理员开通。忘记密码请联系管理员。</p>
+        <NModal v-model:show="showConflict" preset="dialog" type="warning" title="账号已在其他地方登录"
+          :mask-closable="false" :close-on-esc="!loading" :closable="!loading" style="width:min(410px, 92vw)">
+          <p>继续登录会退出原来的会话。取消则保留原会话。</p>
+          <template #action>
+            <NButton :disabled="loading" @click="showConflict=false;replacement=undefined">取消</NButton>
+            <NButton type="primary" :loading="loading" @click="handleLogin(replacement)">确认登录</NButton>
+          </template>
+        </NModal>
       </div>
     </section>
   </main>
@@ -156,6 +179,8 @@ async function handleLogin() {
 .login-form :deep(.input-icon) { color: #5d718e; font-size: 19px; }
 .login-btn { margin-top: 5px; height: 48px; font-size: 16px; font-weight: 650; }
 .login-help { margin-top: 22px; color: #566881; font-size: 12px; line-height: 1.65; }
+.login-notice {text-align:start;margin:0 0 14px;padding:10px 12px;border:1px solid #e9d8a7;
+  border-radius:8px;background:#fff8e8;color:#754d13;font-size:13px}
 
 @media (max-width: 760px) {
   .login-page { grid-template-columns: 1fr; grid-template-rows: auto auto; align-content: center; }

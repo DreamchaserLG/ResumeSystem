@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.api import uploads
 from app.core.db import owner_engine
 from app.main import app
+from conftest import sign_in
 from worker.tasks.parse import process_resume
 
 
@@ -38,7 +39,7 @@ def pdf_resume():
 
 
 def login(client, email, password):
-    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    response = sign_in(client,{"email":email,"password":password})
     assert response.status_code == 200, response.text
     return {"X-Session-Token": response.json()["token"]}
 

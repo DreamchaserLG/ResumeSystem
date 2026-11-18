@@ -1,13 +1,13 @@
 """Department HR workflow for scoped applications and evidence."""
 from datetime import date, datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from app.core.auth import AuthContext, require_auth, require_dept_hr
+from app.core.auth import AuthContext, require_auth, require_recruitment_access
 from app.core.cards import CardQuery, cards, education_summary
 from app.core.db import owner_engine, rls_session
 from app.core.extraction import masked
@@ -64,11 +64,18 @@ class Transfer(Reason):
 class JobInput(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     jd: str = Field(default="", max_length=4000)
+    requirements: str = Field(default="", max_length=4000)
+    required_skills: list[Annotated[str, Field(min_length=1,max_length=60)]] = Field(default_factory=list,max_length=20)
+    experience_tags: list[Annotated[str, Field(min_length=1,max_length=60)]] = Field(default_factory=list,max_length=12)
+    recruitment_start: date | None = None
+    recruitment_end: date | None = None
     status: Literal["open", "paused", "closed"] = "open"
     department_id: int = Field(gt=0)
     rounds: list[RoundInput] | None = Field(default=None, max_length=12)
     planned_headcount: int | None = Field(default=None, ge=1, le=100000)
     target_date: date | None = None
+    recruitment_type: Literal["social","campus","internship","internal"] = "social"
+    recruiter_name: str = Field(default="",max_length=80)
 
 
 def _note(value):
@@ -89,7 +96,7 @@ def _get(session, auth, application_id):
 
 
 @router.get("/options")
-def options(auth: AuthContext = Depends(require_dept_hr)):
+def options(auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as s:
         departments = s.execute(text("SELECT id,name FROM department WHERE status='active' ORDER BY id")).mappings().all()
         skills = s.execute(text("SELECT name FROM skill ORDER BY name")).scalars().all()
@@ -101,7 +108,7 @@ def options(auth: AuthContext = Depends(require_dept_hr)):
 
 @router.get("/applications")
 def applications(job_id: int | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100),
-                 auth: AuthContext = Depends(require_dept_hr)):
+                 auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as s:
         rows = s.execute(text(BASE + """
             AND (CAST(:j AS bigint) IS NULL OR a.job_id=:j) ORDER BY a.id DESC LIMIT :count OFFSET :offset
@@ -131,7 +138,7 @@ def _issues(session, version, policy):
 
 
 @router.get("/applications/{application_id}")
-def detail(application_id: int, include_evidence: bool = True, auth: AuthContext = Depends(require_dept_hr)):
+def detail(application_id: int, include_evidence: bool = True, auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as s:
         app = _get(s, auth, application_id)
         version = app["active_version_id"]
@@ -155,7 +162,7 @@ def detail(application_id: int, include_evidence: bool = True, auth: AuthContext
 
 
 @router.post("/resume-cards/search")
-def resume_cards(body: CardQuery, auth: AuthContext = Depends(require_dept_hr)):
+def resume_cards(body: CardQuery, auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as session:
         return cards(session, auth, body)
 
@@ -171,7 +178,7 @@ def _rendered_image(session, key):
 
 @router.get("/applications/{application_id}/preview")
 def preview(application_id: int, page: int = Query(1, ge=1, le=40), version: int | None = Query(None, gt=0),
-            auth: AuthContext = Depends(require_dept_hr)):
+            auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as s:
         app = _get(s, auth, application_id)
         current = app["active_version_id"]
@@ -194,7 +201,7 @@ def preview(application_id: int, page: int = Query(1, ge=1, le=40), version: int
 
 
 @router.get("/applications/{application_id}/avatar")
-def avatar(application_id: int, version: int | None = Query(None, gt=0), auth: AuthContext = Depends(require_dept_hr)):
+def avatar(application_id: int, version: int | None = Query(None, gt=0), auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as s:
         app = _get(s, auth, application_id)
         current = app["active_version_id"]
@@ -237,7 +244,7 @@ def original(application_id: int, auth: AuthContext = Depends(require_auth)):
 @router.get("/review")
 def review_queue(offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100),
                  job_id: int | None = Query(default=None, gt=0), department_id: int | None = Query(default=None, gt=0),
-                 auth: AuthContext = Depends(require_dept_hr)):
+                 auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as s:
         rows = s.execute(text(BASE + """
             AND (CAST(:job AS bigint) IS NULL OR a.job_id=:job)
@@ -252,7 +259,7 @@ def review_queue(offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=1
 
 
 @router.post("/applications/{application_id}/corrections")
-def correct(application_id: int, body: Correction, auth: AuthContext = Depends(require_dept_hr)):
+def correct(application_id: int, body: Correction, auth: AuthContext = Depends(require_recruitment_access)):
     with owner_engine.begin() as cn:
         row = application_lock(cn, application_id, auth)
         permitted = cn.execute(text("""
@@ -269,7 +276,7 @@ def correct(application_id: int, body: Correction, auth: AuthContext = Depends(r
 
 
 @router.post("/applications/{application_id}/reparse", status_code=202)
-def reparse(application_id: int, auth: AuthContext = Depends(require_dept_hr)):
+def reparse(application_id: int, auth: AuthContext = Depends(require_recruitment_access)):
     with owner_engine.begin() as cn:
         row = application_lock(cn, application_id, auth)
         target = row["pending_version_id"] or row["active_version_id"] or row["submitted_version_id"]
@@ -284,7 +291,7 @@ def reparse(application_id: int, auth: AuthContext = Depends(require_dept_hr)):
 
 
 @router.put("/applications/{application_id}/stage")
-def change_stage(application_id: int, body: StageInput, auth: AuthContext = Depends(require_dept_hr)):
+def change_stage(application_id: int, body: StageInput, auth: AuthContext = Depends(require_recruitment_access)):
     if (body.code == "interview") != (body.round_id is not None):
         raise HTTPException(422, "面试状态必须选择当前岗位的轮次")
     with owner_engine.begin() as cn:
@@ -310,7 +317,7 @@ def change_stage(application_id: int, body: StageInput, auth: AuthContext = Depe
 
 
 @router.get("/applications/{application_id}/transfer-options")
-def transfer_options(application_id: int, auth: AuthContext = Depends(require_dept_hr)):
+def transfer_options(application_id: int, auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as s:
         row = _get(s, auth, application_id)
         items = s.execute(text("""
@@ -323,7 +330,7 @@ def transfer_options(application_id: int, auth: AuthContext = Depends(require_de
 
 
 @router.post("/applications/{application_id}/transfer")
-def transfer(application_id: int, body: Transfer, auth: AuthContext = Depends(require_dept_hr)):
+def transfer(application_id: int, body: Transfer, auth: AuthContext = Depends(require_recruitment_access)):
     with owner_engine.begin() as cn:
         row = application_lock(cn, application_id, auth)
         expect_revision(row, body.workflow_version)
@@ -357,7 +364,7 @@ def transfer(application_id: int, body: Transfer, auth: AuthContext = Depends(re
 
 
 @router.post("/applications/{application_id}/purge")
-def purge(application_id: int, body: Reason, auth: AuthContext = Depends(require_dept_hr)):
+def purge(application_id: int, body: Reason, auth: AuthContext = Depends(require_recruitment_access)):
     with owner_engine.begin() as cn:
         row = application_lock(cn, application_id, auth)
         if row["pending_version_id"] is not None and cn.execute(
@@ -375,41 +382,58 @@ def purge(application_id: int, body: Reason, auth: AuthContext = Depends(require
 
 
 @router.post("/search")
-def search_candidates(body: SearchInput, auth: AuthContext = Depends(require_dept_hr)):
+def search_candidates(body: SearchInput, auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as session:
         return search(session, auth, body)
 
 
 @router.post("/jobs", status_code=201)
 @router.put("/jobs/{job_id}")
-def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Depends(require_dept_hr)):
+def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Depends(require_auth)):
     with owner_engine.begin() as cn:
         departments = fresh_departments(cn, auth)
-        if body.department_id not in departments:
+        department_active = cn.execute(text("SELECT 1 FROM department WHERE id=:id AND status='active' FOR SHARE"),
+                                       {"id":body.department_id}).first()
+        if body.department_id not in departments or (job_id is None and not department_active):
             raise HTTPException(404, "部门不存在")
-        params = {**body.model_dump(exclude={"rounds"}), "id": job_id, "deps": departments, "title": body.title.strip()}
+        params = {**body.model_dump(exclude={"rounds"}), "id":job_id, "deps":departments, "title":body.title.strip()}
         if not params["title"]:
             raise HTTPException(422, "请输入岗位名称")
+        for key in ("required_skills","experience_tags"):
+            values = {}
+            for value in params[key]:
+                label = value.strip()
+                if label:
+                    values.setdefault(label.casefold(),label)
+            params[key] = list(values.values())
+        previous = None
+        if job_id is not None:
+            previous = cn.execute(text("""
+                SELECT department_id,recruitment_start,recruitment_end FROM job
+                WHERE id=:id AND department_id=ANY(CAST(:deps AS bigint[])) FOR UPDATE
+            """), params).mappings().one_or_none()
+            if previous is None:
+                raise HTTPException(404, "岗位不存在")
+            if previous["department_id"] != body.department_id:
+                raise HTTPException(422, "已创建的岗位不能更换部门，请新建岗位后调剂")
+        start, end = (params[key] if not previous or key in body.model_fields_set else previous[key]
+                      for key in ("recruitment_start","recruitment_end"))
+        if start and end and start > end:
+            raise HTTPException(422,"招聘截止日期不能早于开始日期")
         if job_id is None:
             job_id = cn.execute(text("""
-                INSERT INTO job(department_id,title,jd,status,planned_headcount,target_date)
-                VALUES(:department_id,:title,:jd,:status,:planned_headcount,:target_date) RETURNING id
+                INSERT INTO job(department_id,title,jd,status,planned_headcount,target_date,recruitment_type,recruiter_name,
+                                requirements,required_skills,experience_tags,recruitment_start,recruitment_end)
+                VALUES(:department_id,:title,:jd,:status,:planned_headcount,:target_date,:recruitment_type,:recruiter_name,
+                       :requirements,:required_skills,:experience_tags,:recruitment_start,:recruitment_end) RETURNING id
             """), params).scalar_one()
             save_rounds(cn, job_id, body.rounds if body.rounds is not None else [RoundInput(name=name) for name in DEFAULT_ROUNDS])
         else:
-            previous = cn.execute(text("""
-                SELECT department_id FROM job WHERE id=:id AND department_id=ANY(CAST(:deps AS bigint[])) FOR UPDATE
-            """), params).scalar_one_or_none()
-            if previous is None:
-                raise HTTPException(404, "岗位不存在")
-            if previous != body.department_id:
-                raise HTTPException(422, "已创建的岗位不能更换部门，请新建岗位后调剂")
-            cn.execute(text("""
-                UPDATE job SET title=:title,jd=:jd,status=:status,
-                    planned_headcount=CASE WHEN :change_headcount THEN :planned_headcount ELSE planned_headcount END,
-                    target_date=CASE WHEN :change_target THEN :target_date ELSE target_date END WHERE id=:id
-            """), {**params, "change_headcount":"planned_headcount" in body.model_fields_set,
-                    "change_target":"target_date" in body.model_fields_set})
+            editable = ("planned_headcount","target_date","recruitment_type","recruiter_name","requirements",
+                        "required_skills","experience_tags","recruitment_start","recruitment_end")
+            fields = [key for key in editable if key in body.model_fields_set]
+            assignments = "".join(f",{key}=:{key}" for key in fields)
+            cn.execute(text(f"UPDATE job SET title=:title,jd=:jd,status=:status,updated_at=now(){assignments} WHERE id=:id"), params)
             if body.rounds is not None:
                 save_rounds(cn, job_id, body.rounds)
         audit(cn, auth.user_id, "job_write", job_id, target_type="job")

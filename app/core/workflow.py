@@ -21,6 +21,10 @@ def fresh_departments(connection, auth):
     """), {"u": auth.user_id}).scalar_one_or_none()
     if version != auth.perm_version:
         raise HTTPException(401, "权限已变化，请重新登录")
+    if auth.role == "super_admin":
+        if not connection.execute(text("SELECT 1 FROM system_admin WHERE user_id=:u FOR SHARE"), {"u":auth.user_id}).first():
+            raise HTTPException(403, "需要招聘管理权限")
+        return connection.execute(text("SELECT id FROM department ORDER BY id")).scalars().all()
     return connection.execute(text("""
         SELECT a.department_id FROM department_admin a JOIN department d ON d.id=a.department_id
         WHERE a.user_id=:u AND d.status='active'

@@ -1,14 +1,15 @@
 """Scoped list projection and AND-filtering for the resume workspace."""
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 import re
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
 from app.core.extraction import norm
+from app.core.job_skills import catalog_for, recognize_job_skills
 from app.core.recruitment import stage
 from app.core.screening import SearchInput, VISIBLE, _like, _months, _terms, _trusted
 
@@ -29,14 +30,32 @@ DOMAINS = {
 class CardQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: int | None = Field(default=None, gt=0)
+    application_id: int | None = Field(default=None,gt=0)
     department_id: int | None = Field(default=None, gt=0)
     parse_status: Literal["failed","parsing"] | None = None
     stalled: bool = False
     stage_key: str | None = Field(default=None, pattern=r"^(review|progress|rejected|hired|interview:[1-9][0-9]{0,17})$")
     query: str = Field(default="", max_length=200)
     tags: list[str] = Field(default_factory=list, max_length=10)
+    facets: dict[Literal["degree","experience","school","domain","salary"], list[str]] = Field(default_factory=dict, max_length=5)
+    job_ids: list[Annotated[int,Field(gt=0)]] = Field(default_factory=list, max_length=100)
+    followup: Literal["recorded","unrecorded"] | None = None
+    followup_values: list[Annotated[str,Field(min_length=1,max_length=1000)]] = Field(default_factory=list,max_length=30)
+    sort: Literal["recent","match"] = "recent"
+    salary_min: int | None = Field(default=None,ge=0,le=1000000)
+    salary_max: int | None = Field(default=None,ge=0,le=1000000)
+    experience_min_months: int | None = Field(default=None,ge=0,le=1200)
+    experience_max_months: int | None = Field(default=None,ge=0,le=1200)
     page: int = Field(default=1, ge=1, le=10000)
     size: int = Field(default=12, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def ordered_ranges(self):
+        for lower, upper in ((self.salary_min,self.salary_max),
+                             (self.experience_min_months,self.experience_max_months)):
+            if lower is not None and upper is not None and lower > upper:
+                raise ValueError("筛选下限不能高于上限")
+        return self
 
 
 def education_summary(session, version, policy):
@@ -73,7 +92,7 @@ def education_summary(session, version, policy):
     """), {"version":version,"policy":policy}).mappings()]
 
 
-def cards(session, auth, request):
+def cards(session, auth, request, *, show_match=False):
     session.execute(text("SET LOCAL jit=off"))
     policy = session.execute(text("SELECT policy_version FROM search_state WHERE singleton")).scalar_one()
     allowed = set(session.execute(text("""
@@ -82,13 +101,26 @@ def cards(session, auth, request):
     """), {"p": policy}).all())
     field_map = {"degree":"education.degree_level", "school":"education.school_tags",
                  "experience":"work.period", "domain":"experience.domain", "skill":"skill.name",
-                 "capability":"skill.name", "language":"skill.name"}
+                 "capability":"skill.name", "language":"skill.name", "salary":"profile.expected_salary"}
     # Old clients may still send numbered QS tags; they now all mean "has a QS rank".
     selected = list(dict.fromkeys(
         "school:qs_top100" if re.fullmatch(r"school:qs-(?:[1-9][0-9]?|100)", item) else item
         for item in request.tags
     ))
-    for item in selected:
+    facet_options = {
+        "degree": {"high_school","associate","bachelor","master","phd","other"},
+        "experience": {"under1","1to3","3to5","5plus"},
+        "school": set(SCHOOL_FILTERS), "domain": set(DOMAINS),
+        "salary": {"under5","5to10","10to20","20to50","50plus","unknown"},
+    }
+    groups_selected = []
+    for category, values in request.facets.items():
+        if not set(values) <= facet_options[category] or len(values) > len(facet_options[category]):
+            raise HTTPException(422, "无效的简历筛选项")
+        if values:
+            groups_selected.append([f"{category}:{value}" for value in set(values)])
+    all_tags = selected + [tag for group in groups_selected for tag in group]
+    for item in all_tags:
         category, _, value = item.partition(":")
         if not value or len(value) > 80 or category not in field_map:
             raise HTTPException(422, "无效的简历标签")
@@ -101,7 +133,8 @@ def cards(session, auth, request):
     params = {"deps": auth.departments, "job": request.job_id, "department": request.department_id,
               "parse_status": request.parse_status, "policy": policy,
               "size": request.size, "offset": (request.page-1)*request.size, "tags": selected,
-              "end_month": today.year*12+today.month}
+              "end_month": today.year*12+today.month, "jobs":request.job_ids,"followup":request.followup,"application":request.application_id,
+              "followup_values":request.followup_values}
     preview = lambda key: (key, "preview") in allowed
     field = lambda key, expression: expression if preview(key) else "NULL::text"
     education = f"""ARRAY(SELECT e.degree_level FROM resume_education e
@@ -145,6 +178,39 @@ def cards(session, auth, request):
         WHERE p.version_id=a.version_id AND p.policy_version=:policy AND r.kind IN ('work','project')
         AND p.text_norm LIKE ANY(d.patterns)) ORDER BY d.tag)"""
 
+    salary = """(SELECT CASE WHEN count(DISTINCT valid.amount)=1 THEN min(valid.amount) END
+        FROM resume_extra_value e JOIN resume_source_span sp USING(version_id,span_no)
+        CROSS JOIN LATERAL (SELECT workspace_monthly_salary(e.raw_label,coalesce(e.payload->>'corrected',e.payload->>'raw')) AS amount) valid
+        WHERE e.version_id=a.version_id AND NOT sp.is_sensitive AND (sp.ocr_confidence IS NULL OR sp.ocr_confidence >= .9))"""
+    company = f"""(SELECT w.company FROM resume_work w WHERE w.version_id=a.version_id
+        AND {_trusted("w","work.company")}
+        ORDER BY w.is_current DESC,coalesce(w.end_date,w.start_date) DESC NULLS LAST,w.record_no LIMIT 1)"""
+    current_company = f"""(SELECT w.company FROM resume_work w WHERE w.version_id=a.version_id
+        AND w.is_current AND {_trusted("w","work.company")} ORDER BY w.start_date DESC NULLS LAST,w.record_no LIMIT 1)"""
+    rank = "NULL::bigint"
+    requirement_count = 0
+    job_id = request.job_id or (request.job_ids[0] if len(request.job_ids) == 1 else None)
+    if request.sort == "match" and job_id and ("skill.name","filter") in allowed:
+        job = session.execute(text("""
+            SELECT j.jd,j.requirements,j.required_skills FROM job j WHERE j.id=:job AND
+              (j.department_id=ANY(CAST(:deps AS bigint[])) OR EXISTS (
+                 SELECT 1 FROM application a WHERE a.job_id=j.id AND a.deleted_at IS NULL
+                   AND a.handling_department_id=ANY(CAST(:deps AS bigint[]))))
+        """), {"job":job_id,"deps":auth.departments}).mappings().one_or_none()
+        if job:
+            catalog = catalog_for(session)
+            reference = "、".join(job["required_skills"]) or " ".join((job["requirements"],job["jd"] or ""))
+            required = recognize_job_skills(catalog, reference)[:20]
+            requirement_count = len(required)
+            if required:
+                params["ranking_skills"] = [catalog[key][0] for key in required]
+                rank = f"""CASE WHEN a.active_version_id IS NOT NULL THEN (
+                    SELECT count(DISTINCT rs.skill_id) FROM resume_skill rs
+                    WHERE rs.version_id=a.active_version_id AND rs.skill_id=ANY(CAST(:ranking_skills AS bigint[]))
+                        AND {_trusted("rs","skill.name")}
+                ) END"""
+    sort = "evidence_order DESC NULLS LAST,id DESC" if rank != "NULL::bigint" else "id DESC"
+
     metadata = f"""
       SELECT a.*, {field("profile.name", "p.name")} AS name,
              {field("profile.city", "p.city")} AS city,
@@ -161,6 +227,9 @@ def cards(session, auth, request):
              {capabilities if preview("skill.name") else "ARRAY[]::text[]"} AS capabilities,
              {main_language if preview("skill.name") else "NULL::text"} AS main_language,
              {domains if preview("experience.domain") or ("experience.domain","filter") in allowed else "ARRAY[]::text[]"} AS domains,
+             {company if preview("work.company") else "NULL::text"} AS recent_company,
+             {current_company if preview("work.company") else "NULL::text"} AS current_company,
+             {salary if preview("profile.expected_salary") else "NULL::integer"} AS salary_midpoint,
              {f"({_months('a',lower_bound=True)})" if preview("work.period") or ("work.period","filter") in allowed else "NULL::bigint"} AS work_months
       FROM {{source}} a
       LEFT JOIN resume_version v ON v.id=a.version_id
@@ -181,9 +250,8 @@ def cards(session, auth, request):
             SELECT 1 FROM resume_search_record sr WHERE sr.version_id=q.version_id AND sr.policy_version=:policy
               AND EXISTS (SELECT 1 FROM unnest(CAST(:q{index} AS text[])) t WHERE sr.text_norm LIKE t ESCAPE '!')
         ))""")
-    if selected:
-        where.append("""CAST(:tags AS text[]) <@
-            (ARRAY(SELECT 'degree:'||x FROM unnest(q.degrees) x) ||
+    if all_tags:
+        criteria = """(ARRAY(SELECT 'degree:'||x FROM unnest(q.degrees) x) ||
              ARRAY(SELECT 'school:'||x FROM unnest(q.schools) x) ||
              CASE WHEN q.qs_rank IS NOT NULL THEN ARRAY['school:qs_top100'] ELSE ARRAY[]::text[] END ||
              ARRAY(SELECT 'skill:'||lower(x) FROM unnest(q.skills) x) ||
@@ -192,7 +260,33 @@ def cards(session, auth, request):
              ARRAY(SELECT 'domain:'||x FROM unnest(q.domains) x) ||
              CASE WHEN q.work_months IS NULL THEN ARRAY[]::text[] ELSE ARRAY['experience:'||
                CASE WHEN q.work_months<12 THEN 'under1' WHEN q.work_months<36 THEN '1to3'
-                    WHEN q.work_months<60 THEN '3to5' ELSE '5plus' END] END)""")
+                    WHEN q.work_months<60 THEN '3to5' ELSE '5plus' END] END ||
+             ARRAY['salary:'||CASE WHEN q.salary_midpoint IS NULL THEN 'unknown'
+                  WHEN q.salary_midpoint<5000 THEN 'under5' WHEN q.salary_midpoint<10000 THEN '5to10'
+                  WHEN q.salary_midpoint<20000 THEN '10to20' WHEN q.salary_midpoint<50000 THEN '20to50' ELSE '50plus' END])"""
+        if selected:
+            where.append(f"CAST(:tags AS text[]) <@ {criteria}")
+        for index, group in enumerate(groups_selected):
+            params[f"facet{index}"] = group
+            where.append(f"CAST(:facet{index} AS text[]) && {criteria}")
+    range_categories = set()
+    range_filters = (
+        ("salary", "salary_midpoint", request.salary_min, request.salary_max),
+        ("experience", "work_months", request.experience_min_months, request.experience_max_months),
+    )
+    for category, column, lower, upper in range_filters:
+        if lower is None and upper is None:
+            continue
+        if (field_map[category], "filter") not in allowed:
+            raise HTTPException(403, "范围筛选未获授权")
+        range_categories.add(category)
+        if lower is not None:
+            params[f"{category}_min"] = lower
+            where.append(f"q.{column} >= :{category}_min")
+        if upper is not None:
+            params[f"{category}_max"] = upper
+            where.append(f"q.{column} <= :{category}_max")
+
     stage_filter = ""
     if request.stage_key:
         code, _, round_id = request.stage_key.partition(":")
@@ -204,11 +298,17 @@ def cards(session, auth, request):
             stage_filter += " AND a.interview_round_id=:round_id"
     scoped = f"""
         SELECT a.id,a.active_version_id AS version_id,a.job_id,j.title AS job_title,a.status,a.submitted_at,
-               a.pending_version_id,v.status AS parse_status,a.workflow_version,a.recruitment_stage,a.interview_round_id,ir.name AS interview_round_name
+               a.pending_version_id,v.status AS parse_status,a.workflow_version,a.recruitment_stage,a.interview_round_id,
+               ir.name AS interview_round_name, recent.body AS latest_note, {rank} AS evidence_order
         FROM application a JOIN job j ON j.id=a.job_id
         LEFT JOIN job_interview_round ir ON ir.id=a.interview_round_id
         LEFT JOIN resume_version v ON v.id=coalesce(a.pending_version_id,a.active_version_id,a.submitted_version_id)
-        WHERE {VISIBLE} AND (CAST(:job AS bigint) IS NULL OR a.job_id=:job)
+        LEFT JOIN LATERAL (SELECT body FROM application_followup n WHERE n.application_id=a.id ORDER BY id DESC LIMIT 1) recent ON true
+        WHERE {VISIBLE} AND (CAST(:application AS bigint) IS NULL OR a.id=:application)
+          AND (CAST(:job AS bigint) IS NULL OR a.job_id=:job)
+          AND (cardinality(CAST(:jobs AS bigint[]))=0 OR a.job_id=ANY(CAST(:jobs AS bigint[])))
+          AND (cardinality(CAST(:followup_values AS text[]))=0 OR recent.body=ANY(CAST(:followup_values AS text[])))
+          AND (CAST(:followup AS text) IS NULL OR (recent.body IS NOT NULL)=(:followup='recorded'))
           AND (CAST(:department AS bigint) IS NULL OR a.handling_department_id=:department)
           AND (CAST(:parse_status AS text) IS NULL OR v.status=:parse_status) {stage_filter}
           {"AND recruitment_stalled(a.id)" if request.stalled else ""}
@@ -216,16 +316,17 @@ def cards(session, auth, request):
     sql = "WITH scoped AS (" + scoped + ")"
     source = "scoped"
     if where:
-        categories = {tag.split(":", 1)[0] for tag in selected}
+        categories = {tag.split(":", 1)[0] for tag in all_tags} | range_categories
         features = {
             "degrees": education if "degree" in categories else "ARRAY[]::text[]",
-            "schools": school if any(tag.startswith("school:") and tag != "school:qs_top100" for tag in selected) else "ARRAY[]::text[]",
-            "qs_rank": best_qs_rank if "school:qs_top100" in selected else "NULL::smallint",
+            "schools": school if any(tag.startswith("school:") and tag != "school:qs_top100" for tag in all_tags) else "ARRAY[]::text[]",
+            "qs_rank": best_qs_rank if "school:qs_top100" in all_tags else "NULL::smallint",
             "skills": skills if "skill" in categories else "ARRAY[]::text[]",
             "capabilities": capabilities if "capability" in categories else "ARRAY[]::text[]",
             "main_language": main_language if "language" in categories else "NULL::text",
             "domains": domains if "domain" in categories else "ARRAY[]::text[]",
             "work_months": f"({_months('a',lower_bound=True)})" if "experience" in categories else "NULL::bigint",
+            "salary_midpoint": salary if "salary" in categories else "NULL::integer",
         }
         projection = ",".join(f"{value} AS {key}" for key, value in features.items())
         sql += f""", conditions AS (
@@ -233,12 +334,12 @@ def cards(session, auth, request):
             FROM scoped a LEFT JOIN resume_profile p ON p.version_id=a.version_id
         ), matched AS (
             SELECT q.id,q.version_id,q.job_id,q.job_title,q.status,q.submitted_at,q.pending_version_id,q.parse_status,
-                   q.workflow_version,q.recruitment_stage,q.interview_round_id,q.interview_round_name
+                   q.workflow_version,q.recruitment_stage,q.interview_round_id,q.interview_round_name,q.latest_note,q.evidence_order
             FROM conditions q WHERE {" AND ".join(where)}
         )"""
         source = "matched"
-    sql += f", slice AS (SELECT *,count(*) OVER() AS total FROM {source} ORDER BY id DESC LIMIT :size OFFSET :offset)"
-    sql += metadata.replace("{source}","slice") + " ORDER BY a.id DESC"
+    sql += f", slice AS (SELECT *,count(*) OVER() AS total FROM {source} ORDER BY {sort} LIMIT :size OFFSET :offset)"
+    sql += metadata.replace("{source}","slice") + " ORDER BY " + sort
     rows = session.execute(text(sql), params).mappings().all()
     total = rows[0]["total"] if rows else 0
     if not rows and request.page > 1:
@@ -247,6 +348,9 @@ def cards(session, auth, request):
     for row in rows:
         item = dict(row)
         item.pop("total", None)
+        hits = item.pop("evidence_order", None)
+        if show_match:
+            item["match_percent"] = round(100 * hits / requirement_count) if hits is not None and requirement_count else None
         item["stage"] = stage(item.pop("recruitment_stage"), item.pop("interview_round_id"), item.pop("interview_round_name"))
         item["page_count"] = item["page_count"] or int(item["legacy_preview"])
         item["tags"] = []
@@ -274,5 +378,7 @@ def cards(session, auth, request):
             item["tags"].append({"id":f"experience:{bucket}","type":"experience","value":str(months),
                                  "filterable":("work.period","filter") in allowed})
         response.append(item)
-    return {"items":response,"total":total,"page":request.page,"size":request.size,
+    return {**({"matched_requirements":requirement_count} if show_match else {}),
+            "items":response,"total":total,"page":request.page,"size":request.size,
+            "available_facets":[category for category in facet_options if (field_map[category],"filter") in allowed],
             "school_filters": ("education.school_tags", "filter") in allowed}

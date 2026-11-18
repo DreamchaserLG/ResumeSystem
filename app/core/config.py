@@ -1,6 +1,7 @@
 """应用配置（pydantic-settings，环境变量驱动）。"""
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,11 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6380/0"
     celery_broker_url: str = "redis://localhost:6380/1"
     celery_result_backend: str = "redis://localhost:6380/2"
+
+    recruiting_llm_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    recruiting_llm_model: str = "glm-5.3"
+    dashscope_api_key: SecretStr | None = None
+    recruiting_llm_key: SecretStr | None = None
 
     storage_root: str = "./storage"
     session_ttl_seconds: int = 8 * 3600

@@ -31,7 +31,7 @@
 
   /* 布局 */
   --rs-sidebar-width: 232px;
-  --rs-header-height: 60px;
+  --rs-header-height: 50px;
 }
 
 html.dark {
@@ -64,6 +64,7 @@ body,
 }
 
 button, input, select, textarea { font-family: inherit; }
+a, a:hover { text-decoration: none; }
 
 /* Naive UI Provider 中间层补高度链 */
 #app > .n-config-provider,

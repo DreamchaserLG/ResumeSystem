@@ -5,10 +5,11 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.main import app
+from conftest import sign_in as confirmed_sign_in
 
 
 def sign_in(client, email, password):
-    response = client.post("/api/v1/auth/login",json={"email":email,"password":password})
+    response = confirmed_sign_in(client,{"email":email,"password":password})
     assert response.status_code == 200
     return {"X-Session-Token":response.json()["token"]}
 
@@ -33,6 +34,8 @@ def test_profile_fields_and_avatar_are_private_and_persistent():
             assert updated["role"] == prior["role"] and updated["email"] == prior["email"]
             assert client.get("/api/v1/auth/me",headers=hr).json()["display_name"] == "测试职员"
             fresh = sign_in(client,"hr.tech@company.internal","hr123456")
+            assert client.get(path,headers=hr).status_code == 401
+            hr = fresh
             assert client.get(path,headers=fresh).json() == updated
             picture = client.get(path+"/avatar",headers=fresh)
             assert picture.headers["content-type"] == "image/webp" and "no-store" in picture.headers["cache-control"]

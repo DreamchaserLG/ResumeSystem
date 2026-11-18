@@ -2,7 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, computed } from 'vue'
 import {
   ChevronDownOutline, CloseOutline, PencilOutline, CameraOutline, LogOutOutline,
-  MailOutline, CallOutline, LocationOutline, CalendarOutline, BusinessOutline,
+  MailOutline, CallOutline, LocationOutline, CalendarOutline, BusinessOutline, OpenOutline,
 } from '@vicons/ionicons5'
 import { useMessage } from 'naive-ui'
 import { api } from '@/api/client'
@@ -62,7 +62,7 @@ async function loadAvatar(hasAvatar: boolean) {
 function applyProfile(data: Profile) {
   profile.value = data
   const session = auth.session
-  if (session && session.displayName !== data.display_name) auth.setSession({ ...session, displayName:data.display_name })
+  if (session && session.displayName !== data.display_name) auth.updateDisplayName(data.display_name)
   void loadAvatar(data.has_avatar)
 }
 async function load() {
@@ -212,6 +212,9 @@ function logout() {
           </template>
           <template v-else>
             <button type="button" class="profile-text-button logout" @click="logout"><LogOutOutline aria-hidden="true"/>退出登录</button>
+            <a href="/login" target="_blank" rel="noopener noreferrer" class="profile-text-button new-account">
+              <OpenOutline aria-hidden="true"/>在新标签页登录其他账号
+            </a>
             <button ref="editButton" type="button" class="rs-button primary" :disabled="!profile" @click="edit"><PencilOutline aria-hidden="true"/>编辑资料</button>
           </template>
         </footer>
@@ -262,11 +265,12 @@ function logout() {
 .profile-form input,.profile-form textarea { width:100%; min-height:40px; border:1px solid #b7c4d8; background:white; border-radius:7px; padding:8px; font:inherit; font-weight:400; color:var(--rs-text); }
 .profile-form textarea { resize:vertical; }
 .span-two { grid-column:1 / -1; }
-.profile-actions { border-top:1px solid var(--rs-border); background:#f9fbfe; }
+.profile-actions { border-top:1px solid var(--rs-border); background:#f9fbfe; flex-wrap:wrap; }
 .profile-actions .rs-button,.avatar-controls .rs-button { min-height:44px; gap:6px; }
 .profile-text-button { display:inline-flex; align-items:center; gap:7px; min-height:44px; border:0; padding:0 7px; border-radius:7px; background:transparent; color:#345078; cursor:pointer; font:inherit; font-size:13px; }
 .profile-text-button:hover { background:#eaf0f9; }
 .profile-text-button.logout { color:#596881; }
+.profile-text-button.new-account { margin-inline-end:auto; text-decoration:none; }
 .profile-hint,.profile-loading,.profile-error { color:var(--rs-text-secondary); margin:8px 0 0; font-size:12px; }
 .profile-error,.avatar-controls .profile-error { color:#9c252b; }
 @media(max-width:600px) { .profile-panel { inset-inline-end:12px; width:calc(100% - 24px); } .account-meta { display:none; } }

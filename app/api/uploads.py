@@ -12,7 +12,7 @@ from zipfile import BadZipFile, ZipFile
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import text
 
-from app.core.auth import AuthContext, require_dept_hr
+from app.core.auth import AuthContext, require_recruitment_access
 from app.core.db import rls_session
 from app.core.storage import save_original
 from app.core.workflow import audit, fresh_departments, schedule_parse
@@ -58,7 +58,8 @@ async def import_resume(
     job_id: int,
     file: UploadFile,
     candidate_application_id: int | None = None,
-    auth: AuthContext = Depends(require_dept_hr),
+    import_request: uuid.UUID | None = None,
+    auth: AuthContext = Depends(require_recruitment_access),
 ):
     # ① 岗位必须属于授权部门
     with rls_session(departments=auth.departments, user_id=auth.user_id) as s:
@@ -94,11 +95,30 @@ async def import_resume(
     with owner_engine.begin() as cn:
         departments = fresh_departments(cn, auth)
         job = cn.execute(
-            text("SELECT id,department_id FROM job WHERE id=:id AND status='open' AND department_id=ANY(CAST(:deps AS bigint[])) FOR SHARE"),
+            text("""
+                SELECT j.id,j.department_id FROM job j JOIN department d ON d.id=j.department_id
+                WHERE j.id=:id AND j.status='open' AND d.status='active'
+                  AND j.department_id=ANY(CAST(:deps AS bigint[])) FOR SHARE OF j,d
+            """),
             {"id": job_id, "deps": departments},
         ).fetchone()
         if not job:
             raise HTTPException(404, "岗位不存在或已关闭")
+        if import_request is not None:
+            lock_key = f"workspace-import:{job_id}:{import_request}"
+            cn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"), {"key":lock_key})
+            existing = cn.execute(text("""
+                SELECT a.id AS application_id,a.submitted_version_id AS version_id,a.candidate_id,v.status
+                FROM application a JOIN resume_version v ON v.id=a.submitted_version_id
+                JOIN resume_document d ON d.id=v.document_id
+                WHERE a.job_id=:j AND a.import_request=:key AND a.deleted_at IS NULL
+                  AND a.handling_department_id=ANY(CAST(:deps AS bigint[])) AND d.sha256=:sha
+            """), {"j":job_id,"key":import_request,"deps":departments,"sha":hashlib.sha256(data).hexdigest()}).mappings().one_or_none()
+            if existing is not None:
+                return dict(existing)
+            if cn.execute(text("SELECT 1 FROM application WHERE job_id=:j AND import_request=:key"),
+                          {"j":job_id,"key":import_request}).first():
+                raise HTTPException(409,"此导入编号已使用")
         if candidate_application_id is None:
             cand = cn.execute(text("INSERT INTO candidate DEFAULT VALUES RETURNING id")).scalar_one()
         else:
@@ -131,10 +151,10 @@ async def import_resume(
         app_id = cn.execute(
             text(
                 "INSERT INTO application (job_id, candidate_id, submitted_department_id,"
-                " handling_department_id, submitted_version_id, status)"
-                " VALUES (:j, :c, :dep, :dep, :v, 'pending') RETURNING id"
+                " handling_department_id, submitted_version_id, status, import_request)"
+                " VALUES (:j, :c, :dep, :dep, :v, 'pending', :key) RETURNING id"
             ),
-            {"j": job_id, "c": cand, "dep": job.department_id, "v": ver},
+            {"j": job_id, "c": cand, "dep": job.department_id, "v": ver, "key":import_request},
         ).scalar_one()
 
         audit(cn, auth.user_id, "resume_import", app_id, {"version_id": ver})
@@ -154,7 +174,7 @@ async def import_resume(
 def resume_status(
     application_id: int,
     version_id: int,
-    auth: AuthContext = Depends(require_dept_hr),
+    auth: AuthContext = Depends(require_recruitment_access),
 ):
     with rls_session(departments=auth.departments, user_id=auth.user_id) as s:
         row = s.execute(

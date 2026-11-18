@@ -3,8 +3,8 @@
 登录即权限验证：邮箱 + 密码 → PBKDF2 校验 → 角色与部门集合由授权表算出（02 §1）。
 失败（密码错误/账号禁用）写 auth_fail 审计并统一返回 401，不区分具体原因（防枚举）。
 """
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.core.audit import write_audit
@@ -23,6 +23,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class LoginIn(BaseModel):
     email: str
     password: str
+    replace_login: str | None = Field(default=None,pattern=r"^[0-9a-f]{32}$")
 
 
 class SessionOut(BaseModel):
@@ -58,8 +59,6 @@ def login(body: LoginIn):
             target_id=body.email[:64],
             result="denied",
         )
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
 
     # 角色与数据范围：超管不接触简历正文（02 §1）；部门 HR 计算授权部门集合
@@ -67,8 +66,6 @@ def login(body: LoginIn):
     departments = _departments_of(row.id)
     if role == "dept_hr" and not departments:
         write_audit(row.id, "auth_fail", "user", row.email, "no_scope")
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=403, detail="账号尚未授权任何部门，请联系管理员")
 
     user = {
@@ -79,8 +76,11 @@ def login(body: LoginIn):
         "departments": departments,
         "perm_version": int(row.perm_version),
     }
-    token, payload = create_session(user)
-    write_audit(row.id, "login", "user", row.email, detail={"role": role})
+    token, payload, conflict = create_session(user, body.replace_login)
+    if conflict:
+        raise HTTPException(409, detail={"code":"login_conflict","message":"该账号已在其他地方登录，是否退出原会话并继续？",
+                                         "replace_login":conflict})
+    write_audit(row.id, "login", "user", row.email, detail={"role":role,"takeover":bool(body.replace_login)})
 
     return {
         "token": token,

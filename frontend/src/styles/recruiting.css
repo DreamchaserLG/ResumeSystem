@@ -1,0 +1,48 @@
+:root {
+  --hire-ink:#202c3b;
+  --hire-muted:#5d6c7d;
+  --hire-line:#e3e9ee;
+  --hire-paper:#fff;
+  --hire-bg:#f2f5f7;
+  --hire-accent:#087b72;
+  --hire-accent-dark:#056259;
+  --hire-soft:#eaf6f3;
+  --el-color-primary:var(--hire-accent);
+  --el-color-primary-light-3:#43a69c;
+  --el-color-primary-light-5:#68b9b1;
+  --el-color-primary-light-7:#a1d8d1;
+  --el-color-primary-light-8:#c3e7e1;
+  --el-color-primary-light-9:var(--hire-soft);
+  --el-color-primary-dark-2:var(--hire-accent-dark);
+  --el-text-color-primary:var(--hire-ink);
+  --el-text-color-regular:#405264;
+  --el-border-color:var(--hire-line);
+  --el-border-radius-base:7px;
+}
+.recruiting-content { background:var(--hire-bg) !important; color:var(--hire-ink); }
+.recruiting-content a, .recruiting-content a:hover { text-decoration:none; }
+.hire-page { max-width:1600px; margin:0 auto; padding:12px 20px 16px; min-width:0; }
+.hire-page button:focus-visible,.hire-page a:focus-visible,.hire-drawer button:focus-visible {
+  outline:2px solid var(--hire-accent); outline-offset:2px;
+}
+.hire-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; min-height:33px; }
+.hire-heading > div:first-child { display:flex; align-items:baseline; flex-wrap:wrap; gap:2px 11px; min-width:0; }
+.hire-heading h1 { font-size:21px; line-height:1.25; font-weight:680; }
+.hire-heading p { color:var(--hire-muted); font-size:12px; }
+.hire-surface { background:var(--hire-paper); border:1px solid var(--hire-line); border-radius:10px; min-width:0; }
+.hire-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.hire-error { color:#962934; background:#fff3f4; border:1px solid #f6d5d9; border-radius:8px; padding:10px 12px; font-size:13px; margin:8px 0; }
+.hire-muted { color:var(--hire-muted); font-size:13px; }
+/* 文字型小操作统一为真正的迷你按钮（带边框背景，不再有「下划线链接」感） */
+.hire-inline-button { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; border:1px solid var(--hire-line); background:var(--hire-paper); color:var(--hire-accent-dark); cursor:pointer; font:inherit; font-size:12px; line-height:1.4; text-decoration:none; border-radius:6px; transition:border-color .14s ease, background-color .14s ease, color .14s ease; white-space:nowrap; }
+.hire-inline-button:hover, .hire-inline-button:focus-visible { border-color:var(--hire-accent); background:var(--hire-soft); color:var(--hire-accent-dark); }
+.hire-inline-button svg { width:13px; height:13px; }
+.hire-empty { padding:35px 15px; color:var(--hire-muted); text-align:center; font-size:13px; }
+.hire-drawer .el-drawer__header { padding:16px 20px; margin:0; border-bottom:1px solid var(--hire-line); color:var(--hire-ink); font-weight:650; }
+.hire-drawer .el-drawer__body { padding:20px; }
+.hire-drawer .el-drawer__footer { border-top:1px solid var(--hire-line); padding:13px 20px; }
+@media (max-width:760px) {
+  .hire-page { padding:9px 12px 12px; }
+  .hire-heading { gap:7px; margin-bottom:8px; }
+  .hire-heading h1 { font-size:18px; }
+}

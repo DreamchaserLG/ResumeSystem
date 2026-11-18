@@ -4,11 +4,14 @@ import { ExpandOutline, ContractOutline } from '@vicons/ionicons5'
 import { api } from '@/api/client'
 import type { ResumeCard } from '@/api/hr'
 
-const props = defineProps<{ resume: ResumeCard; avatarUrl?: string }>()
+const props = defineProps<{ resume: ResumeCard; avatarUrl?: string; embedded?: boolean }>()
 const emit = defineEmits<{ close: []; pageRatio: [ratio: number]; fullscreenChange: [active: boolean] }>()
 const fullscreen = ref(false)
 const reader = ref<HTMLElement>()
+const readerBody = ref<HTMLElement>()
 const fullscreenButton = ref<HTMLButtonElement>()
+const fitPage = ref(false)
+const widthFit = computed(()=>props.embedded && !fullscreen.value && !fitPage.value)
 function setFullscreen(value: boolean) {
   fullscreen.value = value
   emit('fullscreenChange', value)
@@ -56,6 +59,7 @@ async function getPage(page: number, epoch: number) {
 }
 watch(() => [props.resume.id, props.resume.version_id, count.value], async () => {
   clear(); current.value = 1; target.value = 1
+  if(props.embedded) fitPage.value=false
   if (!count.value || !props.resume.version_id) return
   const epoch = generation
   loading.value = true
@@ -63,6 +67,7 @@ watch(() => [props.resume.id, props.resume.version_id, count.value], async () =>
   catch (e) { if (epoch === generation) error.value = (e as Error).message }
   finally { if (epoch === generation) loading.value = false }
 }, { immediate: true })
+watch([current, widthFit, ()=>props.resume.id],()=>readerBody.value?.scrollTo({top:0}),{flush:'post'})
 onBeforeUnmount(clear)
 
 function finish() {
@@ -99,28 +104,33 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
 
 <template>
   <component :is="fullscreen ? 'dialog' : 'aside'" ref="reader"
-    class="resume-reader" :class="{ 'resume-fullscreen': fullscreen }" aria-label="简历预览" @cancel.prevent="setFullscreen(false)">
+    class="resume-reader" :class="{ 'resume-fullscreen': fullscreen, 'reader-width-fit':widthFit,
+      'reader-inline':embedded && !fullscreen }" aria-label="简历预览" @cancel.prevent="setFullscreen(false)">
     <header>
-      <div class="reader-identity">
+      <div v-if="embedded && !fullscreen" class="reader-identity"><h2>简历原文</h2></div>
+      <div v-else class="reader-identity">
         <img v-if="avatarUrl" class="reader-avatar" :src="avatarUrl" alt="">
         <div><span class="reader-kicker">简历预览</span><h2>{{ resume.name || '申请 #' + resume.id }}</h2></div>
       </div>
-      <div class="reader-actions"><RouterLink :to="'/applications/' + resume.id">申请详情</RouterLink>
+      <div class="reader-actions"><RouterLink v-if="!embedded" :to="'/applications/' + resume.id">申请详情</RouterLink>
+        <button v-if="embedded && !fullscreen && active" type="button" class="reader-fit" :aria-pressed="fitPage"
+          @click="fitPage=!fitPage">{{ fitPage?'适合宽度':'适合整页' }}</button>
         <button ref="fullscreenButton" type="button" class="reader-close reader-expand" :aria-label="fullscreen ? '退出全屏' : '全屏预览'"
           :title="fullscreen ? '退出全屏' : '全屏预览'" @click="setFullscreen(!fullscreen)">
           <ContractOutline v-if="fullscreen" aria-hidden="true"/><ExpandOutline v-else aria-hidden="true"/>
         </button>
-        <button type="button" aria-label="关闭预览" class="reader-close" @click="emit('close')">×</button></div>
+        <button v-if="!embedded || fullscreen" type="button" aria-label="关闭预览" class="reader-close" @click="fullscreen ? setFullscreen(false) : emit('close')">×</button></div>
     </header>
-    <div class="reader-body">
+    <div ref="readerBody" class="reader-body">
       <button v-if="active" type="button" class="paper" :class="{ turning, backwards }"
+        :style="{ '--stage-ratio':frontRatio }"
         :disabled="count < 2 || loading || turning" :aria-label="count > 1 ? '翻到下一页' : '简历第一页'" @click="turnPage">
         <span class="paper-rotation" @animationend.self="finish">
           <img class="paper-face front" :style="{ '--face-ratio': frontRatio }" :src="active" @load="readRatio($event)" :alt="'简历第 ' + current + ' 页'">
           <img v-if="nextImage" class="paper-face back" :style="{ '--face-ratio': backRatio }" :src="nextImage" alt="" @load="readRatio($event, true)">
         </span>
       </button>
-      <p v-else class="reader-empty" role="status">{{ loading ? '正在载入简历…' : error || (resume.parse_status === 'parsing' ? '简历解析中' : '暂未生成预览，可在申请详情重新解析。') }}</p>
+      <p v-else class="reader-empty" role="status">{{ loading ? '正在载入简历…' : error || (resume.parse_status === 'parsing' ? '简历解析中' : '暂未生成预览，可在操作栏重新解析。') }}</p>
     </div>
     <p v-if="active && error" class="reader-error" role="alert">{{ error }}</p>
     <footer v-if="count">
@@ -162,6 +172,17 @@ header h2 { margin:1px 0 0; font-size:16px; overflow-wrap:anywhere; }
 .paper-face.back { transform:rotateY(180deg); }
 .reader-empty,.reader-error { color:#64748b; margin:0 15px; text-align:center; font-size:13px; }
 .reader-error { color:#a02626; }
+.reader-inline {background:#f0f4f4}
+.reader-inline header,.reader-inline footer {background:#f8faf9;border-color:#e7eded}
+.reader-inline header {padding:7px 11px}
+.reader-inline header h2 {font-size:14px}
+.reader-inline footer {padding:5px 10px;border-top:1px solid #e7eded}
+.reader-fit {border:1px solid #dce6e3;background:white;color:#385953;padding:5px 8px;
+  border-radius:6px;cursor:pointer;font:inherit}
+.reader-width-fit .reader-body:has(.paper) {display:block;overflow:auto;scrollbar-width:thin;padding:6px}
+.reader-width-fit .paper {display:block;width:100%;height:auto;aspect-ratio:var(--stage-ratio);
+  margin-inline:auto;container-type:normal}
+.reader-width-fit .paper-face {width:100%;height:100%;aspect-ratio:auto;border-radius:5px;box-shadow:0 4px 14px #273e3c22}
 footer { padding-top:4px; font-size:13px; color:#475569; }
 footer small { color:#64748b; }
 @media(max-width:420px) { .reader-actions { gap:6px; } header,footer { padding-inline:8px; } }

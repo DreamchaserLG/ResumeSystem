@@ -33,14 +33,61 @@ export interface StatsReport {
   metrics:{applications:number; hired:number; open:number; gap:number; unplanned:number; interviews:number|null}
   trend:TrendPoint[]; departments:DepartmentStats[]; jobs:RecruitmentJob[]
 }
-export type Report = MatchReport | StatsReport
+export interface DocAttachment { name:string; chars:number }
+export interface DocReport {
+  kind:'doc'; attachments:DocAttachment[]
+  summary?:string; summary_source?:'llm'|'rules'
+}
+export type Report = MatchReport | StatsReport | DocReport
 export type AnalysisEvent =
   | { event:'report'; report:Report; model_configured:boolean; model?:string|null }
+  | { event:'thinking'; text:string }
   | { event:'delta'; text:string }
   | { event:'reset' }
   | { event:'done'; source:'llm'|'rules' }
+  | { event:'context'; context:AnalysisContext }
+export interface AnalysisContext {
+  phase:'querying'|'generating'|'checking'|'repairing'|'done'
+  turn_no:number; window_used:number; window_keep:number
+  tokens_used:number; tokens_budget:number; summarized:boolean
+  scope_echo:string; scope_source:'memory'|'request'
+}
 export interface AnalysisRequest {
   question:string; department_id?:number; job_id?:number; days:7|30|90; month_to_date?:boolean
+  session_id?:string; attachment_ids?:string[]
+}
+export interface AnalysisAttachment { id:string; name:string; size:number; status:'pending'|'ready'|'failed'; chars?:number; error?:string }
+
+export async function uploadAttachment(file:File):Promise<AnalysisAttachment> {
+  const token=getSessionToken()
+  const body=new FormData()
+  body.append('file',file)
+  const response=await fetch('/api/v1/workspace/analysis/attachments',{method:'POST',cache:'no-store',headers:{'X-Session-Token':token},body})
+  if (response.status===401) {
+    const detail=(await response.json().catch(()=>({}))).detail
+    expireSession(token,detail)
+    throw new Error('会话已过期，请重新登录。')
+  }
+  if (!response.ok) {
+    const error=await response.json().catch(()=>({}))
+    throw new Error(typeof error.detail==='string' ? error.detail : '附件上传失败，请稍后再试。')
+  }
+  return response.json() as Promise<AnalysisAttachment>
+}
+
+export async function pollAttachment(id:string):Promise<AnalysisAttachment> {
+  const token=getSessionToken()
+  const response=await fetch('/api/v1/workspace/analysis/attachments/'+id,{cache:'no-store',headers:{'X-Session-Token':token}})
+  if (response.status===401) {
+    const detail=(await response.json().catch(()=>({}))).detail
+    expireSession(token,detail)
+    throw new Error('会话已过期，请重新登录。')
+  }
+  if (!response.ok) {
+    const error=await response.json().catch(()=>({}))
+    throw new Error(typeof error.detail==='string' ? error.detail : '附件查询失败。')
+  }
+  return response.json() as Promise<AnalysisAttachment>
 }
 
 export async function runAnalysis(body:AnalysisRequest, onEvent:(event:AnalysisEvent)=>void, signal:AbortSignal) {

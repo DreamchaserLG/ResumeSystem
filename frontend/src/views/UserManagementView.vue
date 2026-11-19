@@ -169,8 +169,8 @@ onMounted(load)
         </form>
       </section>
       <section class="hire-surface directory-table account-directory" aria-label="企业账号">
-        <div class="directory-intro"><h2>企业账号</h2><span>{{ filtered.length }} 个账号</span></div>
         <header class="directory-toolbar hire-toolbar">
+          <span class="directory-count">{{ filtered.length }} 个账号</span>
           <ElInput v-model="search" :prefix-icon="SearchOutline" aria-label="搜索账号" placeholder="搜索姓名或邮箱" clearable/>
           <ElSelect :model-value="filterDepartment" filterable clearable placeholder="全部部门" aria-label="按部门筛选账号" @change="changeDepartment">
             <ElOption v-for="dept in directory.departments" :key="dept.id" :value="dept.id" :label="dept.company_name+' / '+dept.name"/>
@@ -240,8 +240,8 @@ onMounted(load)
           <ElTableColumn prop="name" label="部门" min-width="130"/>
           <ElTableColumn prop="company_name" label="归属公司" min-width="165"/>
           <ElTableColumn label="状态" width="80"><template #default="{row}">{{ row.status==='active'?'启用':'停用' }}</template></ElTableColumn>
-          <ElTableColumn label="操作" width="105"><template #default="{row}">
-            <ElButton v-if="row.status==='active'" text type="primary" @click="selectPlacement(row.id,row.company_id)">调整归属</ElButton>
+          <ElTableColumn label="操作" width="105" fixed="right"><template #default="{row}">
+            <button v-if="row.status==='active'" type="button" class="manage-account placement-action" @click="selectPlacement(row.id,row.company_id)">调整归属</button>
           </template></ElTableColumn>
         </ElTable>
       </section>
@@ -283,9 +283,7 @@ onMounted(load)
 .user-nav button[aria-pressed=true] {background:white;border-color:#d6e5e5;color:var(--hire-accent-dark);font-weight:650;box-shadow:0 3px 10px rgba(20,60,68,.08)}
 .directory-table {overflow:hidden}
 .directory-table :deep(.el-table) {--el-table-border-color:var(--hire-line);--el-table-row-hover-bg-color:#eff7f4;font-size:13px}
-.directory-intro {display:flex;align-items:center;justify-content:space-between;gap:10px;padding:15px 17px 0}
-.directory-intro h2 {font-size:16px}
-.directory-intro span {border-radius:20px;background:#eef3f6;color:#4b6172;padding:3px 10px;font-size:12px}
+.directory-count {align-self:center;padding:4px 11px;border:1px solid #dce5ea;border-radius:20px;background:#f2f7f5;color:#42605c;font-size:12px;white-space:nowrap}
 .directory-toolbar {padding:11px 17px 15px}
 .directory-toolbar :deep(.el-input),.directory-toolbar :deep(.el-select) {width:min(235px,100%)}
 .directory-toolbar .status-filter {width:123px}
@@ -310,6 +308,12 @@ onMounted(load)
   background:white;color:var(--hire-accent-dark);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;transition:background-color var(--rs-motion-fast),border-color var(--rs-motion-fast),transform var(--rs-motion-fast)}
 .manage-account svg,.remove-account svg {height:13px;width:13px}
 .manage-account:hover {background:#eaf7f3;border-color:#9ccbc4;transform:translateY(-1px)}
+/* 固定操作列的单元格背景与表格保持一致，避免遮挡与割裂 */
+.directory-table :deep(.el-table-fixed-column--right),
+.directory-table :deep(.el-table-fixed-column--left) {background:inherit}
+.directory-table :deep(tr:hover .el-table-fixed-column--right),
+.directory-table :deep(tr:hover .el-table-fixed-column--left) {background:#eff7f4}
+.placement-action {padding:5px 12px;box-shadow:0 1px 4px rgba(20,60,68,.06)}
 .current-account {color:#647588;font-size:12px;white-space:nowrap}
 .remove-account {color:#9a3440;gap:5px}
 :deep(.el-dialog) {border-radius:14px}

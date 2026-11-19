@@ -18,24 +18,65 @@ from worker.tasks.parse import process_resume
 def test_workspace_resume_roundtrip_and_analysis(monkeypatch):
     monkeypatch.setattr(uploads, "schedule_parse", lambda version: process_resume.run(version))
     monkeypatch.setattr(recruiting_analysis, "get_settings", lambda: SimpleNamespace(
-        recruiting_llm_url="https://dashscope.aliyuncs.com/compatible-mode/v1", recruiting_llm_model="glm-5.3",
+        recruiting_llm_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        recruiting_llm_native_url="https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
+        recruiting_llm_model="glm-5.3",
         dashscope_api_key=SecretStr("test-key"), recruiting_llm_key=None,
     ))
     provider_inputs = []
 
     def provider(request, timeout):
         payload = json.loads(request.data)
-        assert request.full_url == "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        expected_url = ("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+                        if "input" in payload
+                        else "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+        assert request.full_url == expected_url
         assert request.get_header("Authorization") == "Bearer test-key"
         assert payload["model"] == "glm-5.3"
-        data = json.loads(payload["messages"][1]["content"])
+        native = "input" in payload
+        data = json.loads((payload["input"] if native else payload)["messages"][1]["content"])
         provider_inputs.append(data)
-        if payload["stream"]:
-            chunk = json.dumps({"choices":[{"delta":{"content":"基于岗位证据核对。"}}]},ensure_ascii=False)
-            reasoning = '{"choices":[{"delta":{"reasoning_content":"internal"}}]}'
-            return BytesIO((f"data: {reasoning}\n\ndata: {chunk}\n\ndata: [DONE]\n").encode())
-        content = ("简历提供了 Python 技能证据，可进一步核实使用场景。" if "verified_skills" in data
-                   else json.dumps({"skills":["Python","unknown"]}))
+        if "verified_skills" in data:
+            content = "简历提供了 Python 技能证据，可进一步核实使用场景。"
+        elif isinstance(data.get("facts"), dict) and data["facts"].get("facts"):
+            # stats 事实块：用服务端数字拼装合法转述，确保通过 guard 校验
+            block = data["facts"]
+            lines = []
+            for fact in block["facts"]:
+                line = f"{fact['id']}：{fact['label']} {fact['v']} {fact['unit']}"
+                diff = (fact.get("delta") or {}).get("diff")
+                if diff:
+                    line += f"，较上期{'增加' if diff>0 else '减少'} {abs(diff)} {fact['unit']}"
+                lines.append(line + "。")
+            lines += [f"{row['id']}：{row['text']}。" for row in block.get("anomalies", [])]
+            limits = "、".join(gap["field"]+"指标未接入" for gap in block.get("gaps", []))
+            lines.append("【数据限制】" + (limits or "本次统计范围无缺失字段") + "。")
+            lines.append("【可执行核对】核对相关岗位的编制计划是否已录入。")
+            content = "\n".join(lines)
+        elif isinstance(data.get("facts"), dict) and data["facts"].get("counts"):
+            # match 事实块：结构句计数取自 counts，证据句逐字取 quote
+            block = data["facts"]
+            counts = block["counts"]
+            lines = [f"核对 {block['required_count']} 项要求：{counts['met']} 项有证据，"
+                     f"{counts['partial']} 项部分匹配，{counts['unverified']} 项待核实，{counts['not_met']} 项不满足。"]
+            quotes = [row["evidence"]["quote"] for row in block.get("per_skill", []) if row.get("evidence")]
+            if quotes:
+                lines.append("证据：" + "；".join(quotes[:2]) + "。")
+            pending = [row["skill"] for row in block.get("per_skill", []) if row["status"]=="unverified"]
+            if pending:
+                lines.append("待核实：" + "、".join(pending[:3]) + "。")
+            content = "\n".join(lines)
+        else:
+            content = json.dumps({"skills":["Python","unknown"]})
+        if native:
+            # 原生协议流式：两帧思考 + 两帧正文，与非流式拼装同一份 content
+            frames = ['data:'+json.dumps({"output":{"choices":[{"message":{"content":"","reasoning_content":"internal","role":"assistant"},"finish_reason":"null"}]}},ensure_ascii=False),
+                      'data:'+json.dumps({"output":{"choices":[{"message":{"content":"","reasoning_content":"check","role":"assistant"},"finish_reason":"null"}]}},ensure_ascii=False)]
+            half = max(len(content)//2,1)
+            for part in (content[:half],content[half:]):
+                if part:
+                    frames.append('data:'+json.dumps({"output":{"choices":[{"message":{"content":part,"reasoning_content":"","role":"assistant"},"finish_reason":"null"}]}},ensure_ascii=False))
+            return BytesIO("\n".join(frames)+"\n")
         result = {"choices":[{"message":{"content":content}}]}
         return BytesIO(json.dumps(result).encode())
 

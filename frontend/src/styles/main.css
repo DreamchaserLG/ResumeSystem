@@ -1,6 +1,8 @@
 /* ResumeSystem visual foundation */
 :root {
-  --rs-font-family: 'Noto Sans SC Variable', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  /* 全站字体：西文/数字统一 Times New Roman，中文统一宋体系（衬线对衬线） */
+  --rs-font-family: 'Times New Roman', 'SimSun', 'NSimSun', 'STSong', 'Noto Serif CJK SC', 'Source Han Serif SC', serif;
+  --el-font-family: var(--rs-font-family);
   --rs-primary: #0d897e;
   --rs-primary-hover: #08756c;
   --rs-primary-pressed: #075f59;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import { FunnelOutline, CloudUploadOutline, ChevronBackOutline, DocumentTextOutline, AttachOutline, CalendarOutline, SparklesOutline, EllipsisHorizontal, PersonOutline } from '@vicons/ionicons5'
+import { FunnelOutline, CloudUploadOutline, ChevronBackOutline, DocumentTextOutline, AttachOutline, CalendarOutline, SparklesOutline, EllipsisHorizontal } from '@vicons/ionicons5'
 import { ElButton, ElDialog, ElDropdown, ElDropdownMenu, ElDropdownItem, ElInput, ElOption, ElPagination, ElSelect, ElTag, ElMessage } from 'element-plus'
 import { api } from '@/api/client'
 import { readResumeView, saveResumeView } from '@/api/session'
@@ -22,7 +22,7 @@ const incomingCandidate=computed(()=>positive(route.query.candidate))
 const incomingDepartment=computed(()=>positive(route.query.department))
 type ResumeTab='overview'|'resume'|'fields'|'notes'
 type SavedView={path:string; page:number; sort:'recent'|'match'; filters:FilterSelection;
-  tab:ResumeTab; candidate?:number; mobileDetails?:boolean; listWidth?:number; detailWidth?:number}
+  tab:ResumeTab; candidate?:number; mobileDetails?:boolean; listWidth?:number; detailWidth?:number; widthTuned?:boolean; viewportWidth?:number}
 let restored:SavedView|undefined
 try {
   const saved=JSON.parse(readResumeView() || 'null') as SavedView|null
@@ -84,9 +84,14 @@ const candidateOverview=computed(()=>{
   const education=schools.find(item=>item.degree===highest) ?? schools[0]
   const skills=[...new Set(evidence.filter(item=>item.field_key==='skill.name')
     .map(item=>item.text.trim()).filter(Boolean))]
+  const companies=[...new Set(evidence.filter(item=>item.field_key==='work.company')
+    .map(item=>item.text.trim()).filter(Boolean))]
+  const projects=[...new Set(evidence.filter(item=>item.field_key==='project.project_name')
+    .map(item=>item.text.trim()).filter(Boolean))]
   return {
-    education,degree:highest?label(highest):'待核实',major:education&&valueFor('education.major',education.record_no),
-    role:row.target_role, workTitle:valueFor('work.title'), summary:valueFor('profile.summary'),
+    education,degree:highest?label(highest):'',major:education&&valueFor('education.major',education.record_no),
+    role:row.target_role, summary:valueFor('profile.summary'),
+    companies,projects,
     tags:row.tags.filter(item=>['language','capability','domain'].includes(item.type)),skills:skills.slice(0,12),
   }
 })
@@ -98,8 +103,16 @@ const transferId=ref<number>()
 const transferReason=ref('')
 const destinations=ref<TransferJob[]>([])
 const bounded=(value:number|undefined,min:number,max:number,fallback:number)=>Math.min(max,Math.max(min,value ?? fallback))
-const listWidth=ref(bounded(restored?.listWidth,240,460,320))
-const detailWidth=ref(bounded(restored?.detailWidth,320,720,460))
+/* 打开工作台时按可用空间计算最合适的栏宽；用户拖动过的宽度只在同一屏幕宽度下沿用。 */
+const viewportWidth=()=>window.innerWidth-300
+/* 换了屏幕（窗口宽度相差超过 160px）就重新自适应，避免沿用别处拖出来的窄栏。 */
+const sameViewport=!restored?.viewportWidth || Math.abs(restored.viewportWidth-window.innerWidth)<=160
+const widthTuned=ref(Boolean(restored?.widthTuned) && sameViewport)
+function fitWidth(container:number,share:number,min:number,max:number) {return Math.round(Math.min(max,Math.max(min,container*share)))}
+const fitListWidth=()=>fitWidth(viewportWidth(),.26,260,520)
+const fitDetailWidth=()=>fitWidth(viewportWidth(),.36,340,780)
+const listWidth=ref(widthTuned.value?bounded(restored?.listWidth,260,520,fitListWidth()):fitListWidth())
+const detailWidth=ref(widthTuned.value?bounded(restored?.detailWidth,340,780,fitDetailWidth()):fitDetailWidth())
 const mobileDetails=ref(Boolean(restored?.mobileDetails))
 const candidateWorkspace=ref<HTMLElement>()
 const candidateDocument=ref<HTMLElement>()
@@ -115,6 +128,7 @@ const filterCount=computed(()=>{
     + Number(Boolean(salaryRange)) + Number(Boolean(experienceRange))
 })
 const displayName=(row:ResumeCard)=>row.name || '申请 #'+row.id
+const degreeOf=(row:ResumeCard)=>{const tag=row.tags.find(item=>item.type==='degree');return tag?label(tag.value):''}
 const latestMatch=computed(()=>report.value?.matches[0])
 const currentPageCount=computed(()=>list.value.length)
 function resetDraft() { noteBody.value='';noteAttachment.value=undefined;mentionsOpen.value=false;detailError.value='' }
@@ -230,11 +244,18 @@ watch([page,sort,filters,tab,()=>current.value?.id,mobileDetails,listWidth,detai
   saveResumeView(JSON.stringify({path:route.fullPath,page:page.value,sort:sort.value,
     filters:{...selection,followup:flags?.length?flags:undefined},
     tab:tab.value,candidate:current.value?.id,mobileDetails:mobileDetails.value,
-    listWidth:listWidth.value,detailWidth:detailWidth.value} satisfies SavedView))
+    listWidth:listWidth.value,detailWidth:detailWidth.value,widthTuned:widthTuned.value,
+    viewportWidth:window.innerWidth} satisfies SavedView))
 },{deep:true,flush:'post'})
 onMounted(()=>{
   void load(restored?.candidate,restored?.mobileDetails)
   jobDirectory().then(result=>{jobs.value=result.items;directoryDepartments.value=result.departments}).catch(cause=>{error.value=(cause as Error).message})
+  if(!widthTuned.value) void nextTick(()=>{
+    const workspace=candidateWorkspace.value?.clientWidth
+    if(workspace) listWidth.value=fitWidth(workspace,.26,260,Math.min(520,Math.max(260,workspace-720)))
+    const doc=candidateDocument.value?.clientWidth
+    if(doc) detailWidth.value=fitWidth(doc,.36,340,Math.min(780,Math.max(340,doc-340)))
+  })
 })
 onBeforeUnmount(()=>{
   detailVersion++;listVersion++
@@ -297,12 +318,14 @@ function horizontalResize(event:PointerEvent,current:number,min:number,max:numbe
 }
 function resizeList(event:PointerEvent) {
   const available=candidateWorkspace.value?.clientWidth ?? 1200
-  horizontalResize(event,listWidth.value,240,Math.max(240,Math.min(460,available-760)),value=>{listWidth.value=value})
+  horizontalResize(event,listWidth.value,260,Math.max(260,Math.min(520,available-720)),value=>{widthTuned.value=true;listWidth.value=value})
 }
 function resizeDetail(event:PointerEvent) {
   const available=candidateDocument.value?.clientWidth ?? 980
-  horizontalResize(event,detailWidth.value,320,Math.max(320,Math.min(720,available-360)),value=>{detailWidth.value=value})
+  horizontalResize(event,detailWidth.value,340,Math.max(340,Math.min(780,available-340)),value=>{widthTuned.value=true;detailWidth.value=value})
 }
+function nudgeList(delta:number) {widthTuned.value=true;listWidth.value=Math.min(520,Math.max(260,listWidth.value+delta))}
+function nudgeDetail(delta:number) {widthTuned.value=true;detailWidth.value=Math.min(780,Math.max(340,detailWidth.value+delta))}
 async function focusFollowup() {
   tab.value='notes'
   await nextTick()
@@ -444,19 +467,25 @@ function tagValue(tag:ResumeCard['tags'][number]) {
           <div v-show="!filterOpen" ref="candidateScroll" class="candidate-list" :aria-busy="listLoading">
             <button v-for="row in list" :key="row.id" type="button" class="candidate-row" :aria-current="current?.id===row.id?'true':undefined"
               @click="tab='overview';pick(row)">
-              <span class="candidate-row-top"><strong>{{ displayName(row) }}</strong>
-                <small v-if="['parsing','parsed','failed'].includes(row.parse_status)">{{ label(row.parse_status) }}</small></span>
-              <span class="candidate-job">{{ row.job_title }}</span>
-              <span class="candidate-brief">{{ row.tags.filter(tag=>tag.type==='degree'||tag.type==='experience').map(tagValue).join(' · ') || '待补充简况' }}</span>
-              <span v-if="row.latest_note" class="latest-note" :title="row.latest_note">{{ row.latest_note }}</span>
+              <span class="candidate-main">
+                <span class="candidate-row-top">
+                  <strong>{{ displayName(row) }}</strong>
+                  <span v-if="degreeOf(row)" class="candidate-degree">{{ degreeOf(row) }}</span>
+                  <small v-if="['parsing','parsed','failed'].includes(row.parse_status)">{{ label(row.parse_status) }}</small>
+                </span>
+                <span class="candidate-job">{{ row.job_title }}</span>
+              </span>
+              <span v-if="row.latest_note" class="latest-note" :title="row.latest_note">
+                <em>最近跟进</em><span>{{ row.latest_note }}</span>
+              </span>
             </button>
             <p v-if="!currentPageCount" class="hire-empty">{{ listLoading?'正在加载简历…':'没有符合条件的候选人' }}</p>
           </div>
           <footer v-show="!filterOpen" class="candidate-pagination"><span>{{ total }} 份</span><ElPagination v-model:current-page="page" :page-size="size" :total="total" layout="prev, pager, next" :pager-count="3" small/></footer>
       </aside>
       <div class="candidate-resize" role="separator" aria-label="调整列表宽度" aria-orientation="vertical" tabindex="0"
-        title="拖动调整候选人栏宽度" :aria-valuemin="240" :aria-valuemax="460" :aria-valuenow="listWidth" @pointerdown="resizeList"
-        @keydown.left.prevent="listWidth=Math.max(240,listWidth-12)" @keydown.right.prevent="listWidth=Math.min(460,listWidth+12)"></div>
+        title="拖动调整候选人栏宽度" :aria-valuemin="260" :aria-valuemax="520" :aria-valuenow="listWidth" @pointerdown="resizeList"
+        @keydown.left.prevent="nudgeList(-12)" @keydown.right.prevent="nudgeList(12)"></div>
       <section v-if="current" class="candidate-details" aria-label="候选简历详情">
         <div class="candidate-detail-body">
           <div ref="candidateDocument" class="candidate-document-layout" :class="{ 'show-compact-preview':tab==='resume' }"
@@ -465,7 +494,7 @@ function tagValue(tag:ResumeCard['tags'][number]) {
               <div class="candidate-context-top">
                 <header class="candidate-detail-header">
                   <button v-if="mobileDetails" type="button" class="aside-toggle mobile-back" aria-label="返回候选列表" @click="mobileDetails=false"><ChevronBackOutline/></button>
-                  <span class="candidate-avatar"><img v-if="avatar" :src="avatar" alt="候选人头像"><PersonOutline v-else aria-hidden="true"/></span>
+                  <span class="candidate-avatar"><img v-if="avatar" :src="avatar" alt="候选人头像"><i v-else class="avatar-fallback" aria-hidden="true">{{ displayName(current).slice(0,2) }}</i></span>
                   <div class="candidate-identity"><h2>{{ displayName(current) }}</h2>
                     <p>{{ current.job_title }} <span>· 申请 #{{ current.id }}</span></p></div>
                   <div class="hire-toolbar candidate-action">
@@ -494,25 +523,26 @@ function tagValue(tag:ResumeCard['tags'][number]) {
                 <section v-if="candidateOverview" class="candidate-info" aria-label="基本信息">
                   <h3>基本信息</h3>
                   <dl class="candidate-summary">
-                    <div><dt>最高学历</dt><dd>{{ candidateOverview.degree }}</dd></div>
-                    <div><dt>工作经验</dt><dd>{{ current.tags.filter(tag=>tag.type==='experience').map(tagValue).join('') || '待核实' }}</dd></div>
-                    <div><dt>当前公司</dt><dd>{{ current.current_company || '未确认' }}</dd>
-                      <small v-if="!current.current_company && current.recent_company">最近任职：{{ current.recent_company }}</small></div>
-                    <div><dt>期望月薪</dt><dd>{{ current.salary_midpoint==null?'未披露':'约 '+current.salary_midpoint.toLocaleString('zh-CN')+' 元' }}</dd></div>
+                    <div v-if="candidateOverview.degree"><dt>最高学历</dt><dd>{{ candidateOverview.degree }}</dd></div>
+                    <div v-if="current.tags.some(tag=>tag.type==='experience')"><dt>工作经验</dt><dd>{{ current.tags.filter(tag=>tag.type==='experience').map(tagValue).join('') }}</dd></div>
+                    <div v-if="current.current_company || current.recent_company"><dt>当前公司</dt><dd>{{ current.current_company || current.recent_company }}</dd></div>
+                    <div v-if="current.salary_midpoint!=null"><dt>期望月薪</dt><dd>约 {{ current.salary_midpoint.toLocaleString('zh-CN') }} 元</dd></div>
                     <div v-if="candidateOverview.education"><dt>毕业院校 / 院校信息</dt><dd>{{ candidateOverview.education.school }}</dd></div>
                     <div v-if="candidateOverview.major"><dt>所学专业</dt><dd>{{ candidateOverview.major }}</dd></div>
                     <div v-if="candidateOverview.role"><dt>求职意向</dt><dd>{{ candidateOverview.role }}</dd></div>
-                    <div v-if="candidateOverview.workTitle"><dt>任职经历</dt><dd>{{ candidateOverview.workTitle }}</dd></div>
                     <div v-if="current.city"><dt>所在城市</dt><dd>{{ current.city }}</dd></div>
                     <div v-if="current.phone"><dt>手机号</dt><dd>{{ current.phone }}</dd></div>
                     <div v-if="current.address"><dt>地址</dt><dd>{{ current.address }}</dd></div>
-                    <div v-if="details?.submitted_at"><dt>投递时间</dt><dd>{{ dateLabel(details.submitted_at).slice(0,16) }}</dd></div>
                   </dl>
                   <div v-if="candidateOverview.summary" class="candidate-extra">
                     <h4>个人简介</h4><p>{{ candidateOverview.summary }}</p>
                   </div>
-                  <div v-if="candidateOverview.skills.length || candidateOverview.tags.length" class="candidate-extra">
-                    <h4>技能与经历</h4>
+                  <div v-if="candidateOverview.companies.length || candidateOverview.projects.length || candidateOverview.tags.length || candidateOverview.skills.length" class="candidate-extra">
+                    <h4>经历与技能</h4>
+                    <div v-if="candidateOverview.companies.length || candidateOverview.projects.length" class="profile-history">
+                      <p v-for="company in candidateOverview.companies" :key="'c-'+company"><i></i>{{ company }}</p>
+                      <p v-for="project in candidateOverview.projects" :key="'p-'+project"><i></i>{{ project }}</p>
+                    </div>
                     <div v-if="candidateOverview.tags.length" class="profile-evidence-tags">
                       <ElTag v-for="item in candidateOverview.tags" :key="item.id" size="small" effect="light">{{ tagValue(item) }}</ElTag>
                     </div>
@@ -527,14 +557,12 @@ function tagValue(tag:ResumeCard['tags'][number]) {
                   </div>
                   <template v-if="latestMatch">
                     <p v-if="report?.summary" class="candidate-match-text">{{ report.summary }}</p>
-                    <p v-else class="hire-muted">可重新生成文字摘要。以下是已保存的岗位证据。</p>
                     <small v-if="report?.summary" class="summary-source">{{ report.summary_source==='llm'?'模型整理 · 来自简历证据':'依据简历证据整理' }}</small>
                     <div class="match-tags">
                       <ElTag v-for="skill in latestMatch.hits" :key="skill" size="small" type="success" effect="light">{{ skill }}</ElTag>
-                      <ElTag v-for="skill in latestMatch.missing" :key="skill" size="small" type="info" effect="plain">待核实 · {{ skill }}</ElTag>
                     </div>
                   </template>
-                  <p v-else class="hire-muted">对照岗位要求和简历证据，整理已匹配项与面试中可核实的事项。</p>
+                  <p v-else class="hire-muted">暂无匹配摘要，生成后将基于简历证据整理匹配项。</p>
                 </section>
                 <section class="candidate-recent" aria-label="最近跟进">
                   <div class="match-heading"><h3>最近跟进</h3><ElButton text type="primary" @click="tab='notes'">查看记录</ElButton></div>
@@ -587,8 +615,8 @@ function tagValue(tag:ResumeCard['tags'][number]) {
               </div>
             </div>
             <div class="candidate-document-resize" role="separator" aria-label="调整个人信息宽度" aria-orientation="vertical" tabindex="0"
-              title="拖动调整个人信息与简历原文宽度" :aria-valuemin="320" :aria-valuemax="720" :aria-valuenow="detailWidth" @pointerdown="resizeDetail"
-              @keydown.left.prevent="detailWidth=Math.max(320,detailWidth-12)" @keydown.right.prevent="detailWidth=Math.min(720,detailWidth+12)"></div>
+              title="拖动调整个人信息与简历原文宽度" :aria-valuemin="340" :aria-valuemax="780" :aria-valuenow="detailWidth" @pointerdown="resizeDetail"
+              @keydown.left.prevent="nudgeDetail(-12)" @keydown.right.prevent="nudgeDetail(12)"></div>
             <ResumeBook class="candidate-reader" :resume="current" :avatar-url="avatar" embedded/>
           </div>
         </div>
@@ -645,15 +673,20 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-sort button[aria-pressed=true] {background:var(--hire-soft);color:var(--hire-accent-dark)}
 .candidate-sort .clear-filters{margin-left:auto;color:var(--hire-accent-dark)}
 .candidate-list {overflow:auto;min-width:0}
-.candidate-row {display:grid;grid-template-columns:minmax(0,1fr);width:100%;text-align:left;gap:4px;padding:12px 14px;
+.candidate-row {display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:12px 14px;
   border:0;border-bottom:1px solid #edf0f2;border-inline-start:3px solid transparent;background:#fff;cursor:pointer;color:var(--hire-ink);transition:background-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast),transform var(--rs-motion-fast) var(--rs-ease)}
 .candidate-row:hover {background:#f4faf8;transform:translateX(2px)}
 .candidate-row[aria-current=true] {background:linear-gradient(90deg,#e9f8f4,#f6fbfa);border-inline-start-color:var(--hire-accent);box-shadow:inset 8px 0 18px rgba(13,137,126,.035)}
-.candidate-row-top {justify-content:space-between;font-size:14px;margin-bottom:1px}
-.candidate-row-top strong,.candidate-job,.candidate-brief,.latest-note{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.candidate-row-top small,.candidate-brief,.candidate-pagination {color:var(--hire-muted);font-size:12px}
-.candidate-job {font-size:13px}
-.latest-note {display:block;justify-self:start;max-width:100%;font-size:11px;padding:2px 7px;border-radius:4px;background:#e4eeed;color:#355e57;margin-top:2px}
+.candidate-main {display:grid;gap:4px;flex:1;min-width:0}
+.candidate-row-top {font-size:14px;flex-wrap:nowrap;overflow:hidden}
+.candidate-row-top strong,.candidate-job{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.candidate-row-top strong {min-width:0;font-size:14.5px;color:#1d3b45}
+.candidate-row-top small{color:var(--hire-muted);font-size:12px}
+.candidate-degree {flex:none;padding:1px 8px;border:1px solid #d5e7e2;border-radius:20px;background:#f0f7f5;color:var(--hire-accent-dark);font-size:11px;font-weight:600;line-height:1.7}
+.candidate-job {font-size:13px;color:var(--hire-muted)}
+.latest-note {flex:none;width:clamp(108px,38%,210px);display:grid;gap:1px;padding:6px 9px;border-radius:8px;background:#eef6f5;color:#355e57;font-size:11.5px;line-height:1.45}
+.latest-note em {font-style:normal;font-size:9.5px;letter-spacing:.04em;color:#7d9c98}
+.latest-note span {display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;overflow-wrap:anywhere}
 .candidate-pagination{padding:9px 10px;justify-content:space-between;border-top:1px solid var(--hire-line)}
 .candidate-resize,.candidate-document-resize {position:relative;background:#edf2f2;cursor:col-resize;touch-action:none;outline:0}
 .candidate-resize::after,.candidate-document-resize::after {content:'';position:absolute;inset:50% auto auto 50%;width:2px;height:38px;border-radius:2px;background:#b8c9c8;transform:translate(-50%,-50%);transition:height var(--rs-motion-fast),background-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast)}
@@ -662,7 +695,7 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-details {min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr)}
 .candidate-detail-header {padding:11px 14px 8px;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px 10px}
 .candidate-avatar{display:grid;place-items:center;width:42px;height:42px;background:linear-gradient(135deg,var(--hire-soft),#eef0ff);color:var(--hire-accent-dark);border:1px solid #d3e7e3;border-radius:50%;overflow:hidden;flex:none;box-shadow:0 5px 13px rgba(23,75,78,.08)}
-.candidate-avatar img{width:100%;height:100%;object-fit:cover}.candidate-avatar svg{width:23px;height:23px}.candidate-identity{min-width:0}
+.candidate-avatar img{width:100%;height:100%;object-fit:cover}.candidate-avatar svg{width:23px;height:23px}.candidate-avatar .avatar-fallback{font-style:normal;font-size:14px;font-weight:650;letter-spacing:.5px}.candidate-identity{min-width:0}
 .candidate-identity h2{font-size:18px;line-height:1.3}.candidate-identity p{font-size:12px;color:var(--hire-muted);overflow-wrap:anywhere}
 .candidate-action {grid-column:1/-1;justify-content:flex-start;gap:7px;padding-top:3px}
 .candidate-action .el-button {min-width:0;margin:0}
@@ -681,20 +714,28 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-extra {margin-top:12px;padding-top:10px;border-top:1px solid var(--hire-line)}
 .candidate-extra h4 {font-size:13px}
 .candidate-extra p {font-size:13px;line-height:1.65;margin-top:5px;white-space:pre-line;overflow-wrap:anywhere}
+.profile-history {display:grid;gap:5px;margin-bottom:9px}
+.profile-history p {display:flex;align-items:center;gap:8px;color:#31504f;font-size:12.5px;line-height:1.5}
+.profile-history i {width:5px;height:5px;flex:none;border-radius:50%;background:var(--hire-accent);opacity:.65}
 .profile-evidence-tags {display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
 .profile-skill-chip {padding:2px 7px;border:1px solid #dce5ea;border-radius:4px;background:#f3f6f8;
   color:#405569;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
 .candidate-match {background:linear-gradient(135deg,#f1faf7,#f8fbff);border-color:#dbece8}
 .match-heading {display:flex;align-items:center;gap:7px;min-height:27px}
+.match-heading h3 {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .match-heading svg {width:17px;height:17px;color:var(--hire-accent);flex:none}
-.match-heading button {margin-inline-start:auto;height:27px;padding:0 2px}
+.match-heading :deep(.el-button.is-text){margin-inline-start:auto;flex:none;height:26px;padding:0 11px;border:1px solid var(--hire-accent);border-radius:7px;background:var(--hire-accent) !important;color:#fff !important;font-size:12px;font-weight:600}
+.match-heading :deep(.el-button.is-text:hover){border-color:var(--hire-accent-dark);background:var(--hire-accent-dark) !important;color:#fff !important}
+.match-heading :deep(.el-button.is-text.is-disabled){border-color:#c3dcd7;background:#c3dcd7 !important;color:#fff !important;opacity:.85}
 .candidate-match p,.candidate-recent p {margin:7px 0 3px;font-size:13px;line-height:1.65;overflow-wrap:anywhere}
 .candidate-recent p:not(.hire-muted) {white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.candidate-match .summary-source {display:inline-block;margin-top:2px;color:#4d6b72}
 .match-tags {display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}
-.candidate-tabs {display:flex;gap:14px;align-items:center;background:#fff;padding:0 14px}
-.candidate-tabs button {padding:10px 1px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--hire-muted);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+.candidate-tabs {display:flex;gap:6px;align-items:center;background:#fff;padding:0 10px}
+.candidate-tabs button {padding:10px 9px;border:none;border-bottom:2px solid transparent;border-radius:7px 7px 0 0;background:transparent;color:#4e6570;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap;transition:background-color var(--rs-motion-fast),color var(--rs-motion-fast)}
+.candidate-tabs button:hover {background:#f2faf8;color:var(--hire-accent-dark)}
 .candidate-tabs button[aria-pressed=true] {color:var(--hire-accent-dark);border-bottom-color:var(--hire-accent);font-weight:650}
-.candidate-tabs small {font-size:11px;margin-left:3px}
+.candidate-tabs small {font-size:11px;margin-left:3px;color:#4e6570}
 .candidate-tabs .compact-preview-tab {display:none}
 .candidate-reader:not(.resume-fullscreen) {height:100%;min-height:0;border-radius:0;border:0;box-shadow:none}
 @container (max-width:720px) {
@@ -712,13 +753,17 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-fields section{background:white;border:1px solid var(--hire-line);border-radius:7px;padding:12px;font-size:13px}
 .candidate-fields h3{margin-bottom:7px;font-size:14px}.candidate-fields dl{display:grid;gap:7px}.candidate-fields dt{color:var(--hire-muted)}.candidate-fields dt small{font-size:10px}.candidate-fields dd{margin:3px 0 0;overflow-wrap:anywhere}
 .candidate-notes{display:grid;gap:10px}
-.note-timeline{padding:0;list-style:none}.note-timeline li{border-left:2px solid #cce2de;padding:0 0 12px 12px}
-.note-meta{font-size:13px}.note-meta time,.note-scheduled{color:var(--hire-muted);font-size:12px}
+.note-timeline{padding:0;list-style:none}.note-timeline li{border-left:2px solid #b9d8d2;padding:0 0 12px 12px}
+.note-meta{font-size:13px}.note-meta time,.note-scheduled{color:#556a75;font-size:12px}
 .note-text{padding-top:4px;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
-.note-download{display:inline-flex;align-items:center;gap:4px;margin-top:4px;font-size:12px}.note-download svg{width:14px;height:14px}
+.note-download{display:inline-flex;align-items:center;gap:4px;margin-top:4px;font-size:12px;color:var(--hire-accent-dark)}.note-download svg{width:14px;height:14px}
+.candidate-notes > :deep(.el-button.is-text){justify-self:start;height:30px;padding:0 12px;border:1px solid #d7e6e3;border-radius:7px;background:#fff;color:var(--hire-accent-dark) !important;font-size:12.5px}
+.candidate-notes > :deep(.el-button.is-text:hover){border-color:var(--hire-accent);background:var(--hire-soft) !important}
 .note-composer {position:sticky;bottom:0;display:grid;gap:7px;padding:11px;background:white;border:1px solid var(--hire-line);border-radius:8px;font-size:13px}
 .note-composer textarea,.candidate-dialog input[type=datetime-local] {width:100%;padding:8px;border:1px solid #cdd8de;border-radius:6px;color:inherit;background:white;font:inherit}
 .note-composer textarea{resize:vertical;min-height:65px}
+.note-composer :deep(.el-button.is-text){height:29px;padding:0 10px;border:1px solid #dbe7e5;border-radius:7px;background:#f8fbfa;color:#35605b !important;font-size:12.5px}
+.note-composer :deep(.el-button.is-text:hover){border-color:#b9d8d2;background:#eef7f5 !important;color:var(--hire-accent-dark) !important}
 .mention-list{display:flex;gap:5px;flex-wrap:wrap}.note-actions{flex-wrap:wrap}
 .note-actions button:last-child {margin-inline-start:auto}
 .candidate-dialog{display:grid;gap:10px}.candidate-dialog label{display:grid;gap:6px}

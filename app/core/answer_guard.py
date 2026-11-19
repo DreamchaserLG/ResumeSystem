@@ -1,0 +1,98 @@
+"""Reply guard: turn prompt-level bans into deterministic checks."""
+import json
+import re
+
+BANNED = (
+    "整体表现良好", "情况稳定", "较为理想", "值得关注", "建议重点关注", "提升空间",
+    "总体健康", "成效显著", "明显改善", "有待加强", "需要重视", "综合来看",
+    "沟通能力强", "技术扎实", "综合素质", "匹配度高", "非常合适", "值得培养",
+    "建议录用", "建议淘汰", "建议安排", "从数据上看",
+)
+NUM = re.compile(r"\d+(?:\.\d+)?")
+FID = re.compile(r"([FA]\d+)：")
+SCORE = re.compile(r"\d+\s*(?:分|%|％)|[ABC]\s*档|排名\s*\d")
+# stats 350：复杂事实块（6 facts + 3 anomalies）实测模型输出 260-330 字且逐轮抖动，220/320 会系统性触发 too_long
+LIMIT = {"stats": 350, "match": 120}
+STRUCT = ("核对", "待核实", "不满足", "【")
+
+
+def _walk(node):
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _walk(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk(value)
+    elif isinstance(node, str):
+        yield node
+
+
+def fact_numbers(facts) -> set[str]:
+    """Every numeric token that legitimately appears in the fact block."""
+    allowed: set[str] = set()
+    for chunk in _walk(facts):
+        allowed.update(NUM.findall(chunk))
+    allowed.update(NUM.findall(json.dumps(facts, ensure_ascii=False)))
+    return allowed
+
+
+def fact_ids(facts) -> set[str]:
+    ids = {row["id"] for row in facts.get("facts", [])}
+    ids |= {row["id"] for row in facts.get("anomalies", [])}
+    return ids
+
+
+def _overlap(a: str, b: str, n: int = 6) -> int:
+    """最长公共子串是否达到 n（只判断存在性，够用且 O(len)）。"""
+    if len(a) < n or len(b) < n:
+        return 0
+    grams = {a[i:i + n] for i in range(len(a) - n + 1)}
+    for i in range(len(b) - n + 1):
+        if b[i:i + n] in grams:
+            return n
+    return 0
+
+
+def _trace_problems(text: str, facts: dict, kind: str) -> list[str]:
+    """stats 靠 fact_id 追溯；match 靠 evidence 原文逐字追溯（两类格式不同，不能共用一套）。"""
+    if kind == "match":
+        quotes = [row["evidence"]["quote"] for row in facts.get("per_skill", [])
+                  if row.get("evidence")]
+        evidence = [line.strip() for line in text.splitlines()
+                    if line.strip() and not line.strip().startswith(STRUCT)]
+        if not evidence:
+            return []
+        bad = [line for line in evidence if not any(_overlap(line, q) >= 6 for q in quotes)]
+        return ["evidence_not_verbatim:" + str(len(bad))] if bad else []
+    used = FID.findall(text)
+    if not used:
+        return ["no_fact_id"]
+    if set(used) - fact_ids(facts):
+        return ["unknown_fact_id:" + ",".join(sorted(set(used) - fact_ids(facts)))]
+    if len(used) != len(set(used)):
+        return ["duplicate_fact_id"]
+    return []
+
+
+def check(text: str, facts: dict, kind: str = "stats") -> list[str]:
+    text = (text or "").strip()
+    problems: list[str] = []
+    if not text:
+        return ["empty"]
+
+    hits = [word for word in BANNED if word in text]
+    if hits:
+        problems.append("banned_phrase:" + ",".join(hits))
+
+    # fact_id 前缀里的序号不是数据，先剥离再抽数字，否则 F9 会被判成越界数字
+    numbers = set(NUM.findall(FID.sub("", text))) - fact_numbers(facts)
+    if numbers:
+        problems.append("number_out_of_scope:" + ",".join(sorted(numbers)))
+
+    problems += _trace_problems(text, facts, kind)
+
+    if len(text) > LIMIT.get(kind, 220):
+        problems.append(f"too_long:{len(text)}")
+    if kind == "match" and SCORE.search(text):
+        problems.append("score_or_grade")
+    return problems

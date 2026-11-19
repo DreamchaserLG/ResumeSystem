@@ -10,7 +10,7 @@ const jobId = computed(() => {
   return Number.isSafeInteger(id) && id > 0 ? id : 0
 })
 const filters = reactive({ keywords: '', section: 'work', degree: '', skill: '', company: '', city: '', min_months: '', school_tag: '', same_experience: true })
-const states = { match: '满足', review: '待核实', reject: '不满足', no_text: '关键词未命中' }
+const states = { match: '满足', review: '待确认', reject: '不满足', no_text: '关键词未命中' }
 const state = ref<keyof typeof states>('match')
 const options = ref<Options>()
 const jobs = ref<Job[]>([])

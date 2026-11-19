@@ -30,7 +30,13 @@ frontend: ## 本地开发：启动前端 Vite dev server（http://localhost:5173
 	cd frontend && pnpm dev
 
 test: ## 运行后端测试（本地 venv，需先 up + migrate）
-	pytest tests -q
+        pytest tests -q
+
+guard-test: ## 校验器与会话记忆单测
+        pytest tests/test_answer_guard.py tests/test_conv_memory.py -q
+
+prompt-eval: ## 提示词质量回归（需 RECRUITING_LLM_KEY）
+        python -m eval.prompt_ab
 
 logs: ## 查看 API 与 worker 日志
 	docker compose logs -f api worker

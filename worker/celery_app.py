@@ -21,4 +21,4 @@ celery_app.conf.update(
 )
 
 # 导入任务模块，保证任务注册
-from worker.tasks import job_import, parse, ping  # noqa: E402,F401
+from worker.tasks import attachment, job_import, parse, ping  # noqa: E402,F401

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6380/2"
 
     recruiting_llm_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # 原生协议端点：思考流展示走原生 SSE（兼容模式不透传 reasoning_content）
+    recruiting_llm_native_url: str = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
     recruiting_llm_model: str = "glm-5.3"
     dashscope_api_key: SecretStr | None = None
     recruiting_llm_key: SecretStr | None = None

@@ -10,7 +10,8 @@ const fullscreen = ref(false)
 const reader = ref<HTMLElement>()
 const readerBody = ref<HTMLElement>()
 const fullscreenButton = ref<HTMLButtonElement>()
-const fitPage = ref(true)
+/* 嵌入式默认按宽度铺排（比“适合整页”更易读），全屏仍默认整页可见。 */
+const fitPage = ref(!props.embedded)
 const zoom = ref(1)
 const widthFit = computed(()=>(props.embedded || fullscreen.value) && !fitPage.value)
 const paperStyle = computed(()=>({
@@ -207,9 +208,10 @@ header h2 { margin:1px 0 0; font-size:16px; overflow-wrap:anywhere; }
 .reader-fit {border:1px solid #cfe0dd;background:white;color:var(--rs-primary-hover);padding:5px 8px;
   border-radius:7px;cursor:pointer;font:inherit;transition:background-color var(--rs-motion-fast),border-color var(--rs-motion-fast)}
 .reader-fit:hover {background:var(--rs-primary-soft);border-color:#9ac7c1}
-.reader-width-fit .reader-body:has(.paper) {display:block;overflow:auto;scrollbar-width:thin;padding:6px}
+.reader-width-fit .reader-body:has(.paper) {display:block;overflow:auto;scrollbar-width:thin;padding:10px 6px}
+/* 宽度模式限制单页最大宽度，避免超宽屏把一页 A4 拉成整屏巨幅。 */
 .reader-width-fit .paper {display:block;height:auto;aspect-ratio:var(--stage-ratio);
-  margin-inline:auto;container-type:normal}
+  max-width:min(860px,100%);margin-inline:auto;container-type:normal}
 .reader-width-fit .paper-face {width:100%;height:100%;aspect-ratio:auto;border-radius:5px;box-shadow:0 4px 14px #273e3c22}
 footer { padding-top:4px; font-size:13px; color:#475569; }
 footer small { color:#64748b; }

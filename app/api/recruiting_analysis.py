@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request as HttpRequest
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -25,6 +25,7 @@ from app.core.extraction import masked
 from app.core import conv_memory
 from app.core.job_skills import catalog_for, recognize_job_skills
 from app.core.prompts import load as load_prompt
+from app.core.reasoning_zh import ChineseReasoningStream
 from app.core.screening import _trusted
 from app.core.storage import save_original
 from app.core.workflow import application_lock, audit
@@ -49,8 +50,10 @@ def model_request(system, data, stream=False, temperature=0.2):
     payload = {"model":settings.recruiting_llm_model,
                "messages":[{"role":"system","content":system},
                            {"role":"user","content":json.dumps(data,ensure_ascii=False)}],
-               "stream":stream,"max_tokens":12288,"reasoning_effort":"low",
+               "stream":stream,"max_tokens":12288,
                "temperature":temperature,"top_p":0.8,"frequency_penalty":0.3}
+    if settings.recruiting_llm_model.lower().startswith("glm"):
+        payload["reasoning_effort"] = "low"
     return Request(settings.recruiting_llm_url.rstrip("/")+"/chat/completions",
                    data=json.dumps(payload,ensure_ascii=False).encode(),headers=headers,method="POST")
 
@@ -100,8 +103,8 @@ def _stream_chat(req,timeout):
                         delta = chunk["choices"][0].get("delta") or {}
                     except (KeyError,IndexError,TypeError):
                         continue
-                text = delta.get("reasoning_content")
-                if text:
+                text = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+                if isinstance(text,str) and text:
                     yield "thinking",text
                 text = delta.get("content")
                 if text:
@@ -553,7 +556,8 @@ def estimate_tokens(text) -> int:
 
 
 @router.post("/analysis")
-def analysis(request: AnalysisInput, auth: AuthContext = Depends(require_recruitment_access)):
+def analysis(request: AnalysisInput, auth: AuthContext = Depends(require_recruitment_access),
+             http_request: HttpRequest = None):
     request.question = request.question.strip()
     if not request.question:
         raise HTTPException(422,"请输入招聘问题")
@@ -589,8 +593,11 @@ def analysis(request: AnalysisInput, auth: AuthContext = Depends(require_recruit
             ctx["state"] = state
     scope_echo = conv_memory.scope_echo(ctx.get("state") or {}) if ctx is not None else ""
 
+    use_sse = http_request is not None and "text/event-stream" in http_request.headers.get("accept", "")
+
     def frame(event, **fields):
-        return json.dumps({"event":event,**fields},ensure_ascii=False)+"\n"
+        payload = json.dumps({"event":event,**fields},ensure_ascii=False)
+        return ("data: "+payload+"\n\n") if use_sse else payload+"\n"
 
     def context_event(phase):
         kind = report["kind"]
@@ -645,13 +652,37 @@ def analysis(request: AnalysisInput, auth: AuthContext = Depends(require_recruit
                         b_result["error"] = error
                 thread_b = threading.Thread(target=_call_b,daemon=True)
                 thread_b.start()
-                req_a = native_stream_request(load_prompt(prompt_name),data)
+                settings = get_settings()
+                req_a = (native_stream_request(load_prompt(prompt_name),data)
+                         if "dashscope.aliyuncs.com" in settings.recruiting_llm_url
+                         and settings.recruiting_llm_model.lower().startswith("glm")
+                         else model_request(load_prompt(prompt_name),data,stream=True))
                 parts = []
+                reasoning_zh = ChineseReasoningStream()
+                translation_failed = False
+                thinking_len = 0
                 for channel,text in _stream_chat(req_a,timeout=75):
                     if channel=="content":
                         parts.append(text)
                     else:
-                        yield frame("thinking",text=text)
+                        if not translation_failed:
+                            try:
+                                for translated in reasoning_zh.feed(text):
+                                    yield frame("thinking",text=translated)
+                            except (RuntimeError,ImportError,OSError) as error:
+                                logger.warning("Offline reasoning translation unavailable: %s",error)
+                                translation_failed = True
+                                yield frame("thinking",text="本地翻译暂不可用，正在继续生成中文答复。")
+                        thinking_len += len(text)
+                        if thinking_len > 5000:
+                            break
+                if not translation_failed:
+                    try:
+                        for translated in reasoning_zh.flush():
+                            yield frame("thinking",text=translated)
+                    except (RuntimeError,ImportError,OSError) as error:
+                        logger.warning("Offline reasoning translation unavailable: %s",error)
+                        yield frame("thinking",text="思考过程末段暂不可翻译。")
                 thread_b.join(timeout=90)
                 message = b_result.get("message")
                 summary = (message.get("content") or "").strip() if message else ""
@@ -697,5 +728,5 @@ def analysis(request: AnalysisInput, auth: AuthContext = Depends(require_recruit
         yield frame("done",source="rules")
 
     return StreamingResponse((chunk for chunk in stream() if chunk is not None),
-                             media_type="application/x-ndjson",
+                             media_type="text/event-stream" if use_sse else "application/x-ndjson",
                              headers={"Cache-Control":"no-store","X-Accel-Buffering":"no"})

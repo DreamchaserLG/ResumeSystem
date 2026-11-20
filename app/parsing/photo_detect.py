@@ -56,7 +56,7 @@ def detect_photo_regions(
     W, H = img.size
     results: list[Span] = []
 
-    candidates = figure_regions if figure_regions else _heuristic_regions(img)
+    candidates = figure_regions or []
     for bbox in candidates:
         x0, y0, x1, y1 = [int(v) for v in bbox]
         x0, y0 = max(0, x0), max(0, y0)
@@ -77,6 +77,9 @@ def detect_photo_regions(
                     reading_order=10**6 + y0,  # photo 不参与正文阅读顺序，pipeline 最终排除
                 )
             )
+    if not results and page_no == 1:
+        results.extend(Span("photo", None, {"page":page_no,"bbox":box}, "layout_detection",
+                            reading_order=10**6+box[1]) for box in _header_portraits(img, text_lines))
     return results
 
 
@@ -112,19 +115,42 @@ def _classify_figure(img: Image.Image, bbox: tuple[int, int, int, int]) -> str |
     return "graphic"
 
 
-def _detect_face(img: Image.Image, bbox: tuple[int, int, int, int]) -> bool:
-    """YuNet DNN 人脸检测（cv2 5.x）；输入为候选区域，区域内任一命中即 True。"""
+def _face_boxes(img: Image.Image, bbox: tuple[int, int, int, int]) -> list[list[float]]:
+    """Return face rectangles in page coordinates."""
     crop = np.array(img.crop(bbox))          # RGB
     bgr = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
     h, w = bgr.shape[:2]
     if w < 24 or h < 24:
-        return False
+        return []
     det = _detector()
     if det is None:
-        return False
-    det.setInputSize((w, h))
-    _, faces = det.detect(bgr)
-    return faces is not None and len(faces) > 0
+        return []
+    with _lock:
+        det.setInputSize((w, h))
+        _, faces = det.detect(bgr)
+    origin_x, origin_y = bbox[:2]
+    return [[origin_x+x, origin_y+y, origin_x+x+width, origin_y+y+height]
+            for x,y,width,height in faces[:, :4]] if faces is not None else []
+
+
+def _detect_face(img: Image.Image, bbox: tuple[int, int, int, int]) -> bool:
+    return bool(_face_boxes(img, bbox))
+
+
+def _header_portraits(img, text_lines):
+    width, height = img.size
+    # Flattened scans and clipped PDF tiles may have no usable image-object box.
+    for x0, x1 in ((0, int(width*.48)), (int(width*.52), width)):
+        if x1-x0 < 24 or height*.32 < 24:
+            continue
+        for left, top, right, bottom in _face_boxes(img, (x0, 0, x1, int(height*.32))):
+            side = max(right-left, bottom-top)
+            if side < 24:
+                continue
+            portrait = [max(0, left-.4*side), max(0, top-.55*side),
+                        min(width, right+.4*side), min(height, bottom+.65*side)]
+            if not text_lines or _text_overlap_ratio(portrait, text_lines) <= .10:
+                yield [round(float(value)) for value in portrait]
 
 
 def _near_corner_or_top(img: Image.Image, bbox: tuple[int, int, int, int]) -> bool:
@@ -135,19 +161,6 @@ def _near_corner_or_top(img: Image.Image, bbox: tuple[int, int, int, int]) -> bo
     left = x0 < margin_x
     right = x1 > W - margin_x
     return top and (left or right)
-
-
-def _heuristic_regions(img: Image.Image) -> list[list[float]]:
-    """无版面分析时的粗筛：角部/顶部区块扫描（性能兜底，不作为主路径）。"""
-    W, H = img.size
-    out = []
-    s = int(min(W, H) * 0.18)
-    for (x0, y0) in [
-        (W - s - 20, 20),        # 右上
-        (20, 20),                # 左上
-    ]:
-        out.append([float(x0), float(y0), float(x0 + s), float(y0 + s)])
-    return out
 
 
 def build_masked_preview(image_bytes: bytes, photo_bboxes: list[list[float]], block: int = 14) -> bytes:

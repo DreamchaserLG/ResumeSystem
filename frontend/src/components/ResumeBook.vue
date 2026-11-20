@@ -4,7 +4,7 @@ import { ExpandOutline, ContractOutline } from '@vicons/ionicons5'
 import { api } from '@/api/client'
 import type { ResumeCard } from '@/api/hr'
 
-const props = defineProps<{ resume: ResumeCard; avatarUrl?: string; embedded?: boolean }>()
+const props = defineProps<{ resume: ResumeCard; avatarUrl?: string; embedded?: boolean; pdfOriginal?: boolean }>()
 const emit = defineEmits<{ close: []; pageRatio: [ratio: number]; fullscreenChange: [active: boolean] }>()
 const fullscreen = ref(false)
 const reader = ref<HTMLElement>()
@@ -34,6 +34,10 @@ watch(fullscreen, (value) => {
 }, { flush: 'post' })
 const current = ref(1), target = ref(1)
 const active = ref(''), nextImage = ref(''), error = ref('')
+const pdfUrl = ref('')
+const pdfMode = ref(false)
+const pdfLoading = ref(false)
+const pdfError = ref('')
 const frontRatio = ref(Math.SQRT1_2), backRatio = ref(Math.SQRT1_2)
 function readRatio(event: Event, back = false) {
   const image = event.currentTarget as HTMLImageElement
@@ -62,7 +66,31 @@ function clear() {
   if (timer) clearTimeout(timer)
   images.forEach(url => URL.revokeObjectURL(url))
   images.clear()
+  if (pdfUrl.value) URL.revokeObjectURL(pdfUrl.value)
+  pdfUrl.value = ''; pdfMode.value = false; pdfError.value = ''; pdfLoading.value = false
   active.value = ''; nextImage.value = ''; error.value = ''; turning.value = false; loading.value = false
+}
+async function openPdf() {
+  if (pdfUrl.value) {
+    pdfMode.value = !pdfMode.value
+    return
+  }
+  const {id, version_id} = props.resume
+  if (!version_id || pdfLoading.value) return
+  const epoch = generation
+  pdfError.value = ''
+  pdfLoading.value = true
+  try {
+    const blob = await api.get<Blob>(`/hr/applications/${id}/original?inline=true&version=${version_id}`)
+    if (epoch === generation) {
+      pdfUrl.value = URL.createObjectURL(blob)
+      pdfMode.value = true
+    }
+  } catch (cause) {
+    if (epoch === generation) pdfError.value = (cause as Error).message
+  } finally {
+    if (epoch === generation) pdfLoading.value = false
+  }
 }
 async function getPage(page: number, epoch: number) {
   const cached = images.get(page)
@@ -130,12 +158,14 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
         <div><span class="reader-kicker">简历预览</span><h2>{{ resume.name || '申请 #' + resume.id }}</h2></div>
       </div>
       <div class="reader-actions"><RouterLink v-if="!embedded" :to="'/applications/' + resume.id">申请详情</RouterLink>
-        <div v-if="active" class="reader-zoom" aria-label="简历缩放">
+        <button v-if="pdfOriginal" type="button" class="reader-fit" :disabled="pdfLoading" :aria-pressed="pdfMode"
+          @click="openPdf">{{ pdfLoading?'载入中…':pdfMode?'脱敏预览':'查看 PDF 原件' }}</button>
+        <div v-if="active && !pdfMode" class="reader-zoom" aria-label="简历缩放">
           <button type="button" aria-label="缩小简历" :disabled="zoom<=.6" @click="zoomBy(-.1)">−</button>
           <span>{{ Math.round(zoom*100) }}%</span>
           <button type="button" aria-label="放大简历" :disabled="zoom>=1.8" @click="zoomBy(.1)">+</button>
         </div>
-        <button v-if="embedded && !fullscreen && active" type="button" class="reader-fit" :aria-pressed="fitPage"
+        <button v-if="embedded && !fullscreen && active && !pdfMode" type="button" class="reader-fit" :aria-pressed="fitPage"
           @click="toggleFit">{{ fitPage?'适合宽度':'适合整页' }}</button>
         <button ref="fullscreenButton" type="button" class="reader-close reader-expand" :aria-label="fullscreen ? '退出全屏' : '全屏预览'"
           :title="fullscreen ? '退出全屏' : '全屏预览'" @click="setFullscreen(!fullscreen)">
@@ -144,7 +174,8 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
         <button v-if="!embedded || fullscreen" type="button" aria-label="关闭预览" class="reader-close" @click="fullscreen ? setFullscreen(false) : emit('close')">×</button></div>
     </header>
     <div ref="readerBody" class="reader-body">
-      <button v-if="active" type="button" class="paper" :class="{ turning, backwards }"
+      <iframe v-if="pdfMode" class="original-pdf" :src="pdfUrl" title="简历 PDF 原件"></iframe>
+      <button v-else-if="active" type="button" class="paper" :class="{ turning, backwards }"
         :style="paperStyle"
         :disabled="count < 2 || loading || turning" :aria-label="count > 1 ? '翻到下一页' : '简历第一页'" @click="turnPage">
         <span class="paper-rotation" @animationend.self="finish">
@@ -154,8 +185,8 @@ function turnPage() { return flip(current.value < count.value ? current.value + 
       </button>
       <p v-else class="reader-empty" role="status">{{ loading ? '正在载入简历…' : error || (resume.parse_status === 'parsing' ? '简历解析中' : '暂未生成预览，可在操作栏重新解析。') }}</p>
     </div>
-    <p v-if="active && error" class="reader-error" role="alert">{{ error }}</p>
-    <footer v-if="count">
+    <p v-if="pdfError || (active && error)" class="reader-error" role="alert">{{ pdfError || error }}</p>
+    <footer v-if="count && !pdfMode">
       <button class="rs-button" type="button" :disabled="current <= 1 || turning || loading" @click="flip(current - 1)">‹ 上一页</button>
       <span aria-live="polite">{{ current }} / {{ count }}<small v-if="count > 1"> · 点击简历翻页</small></span>
       <button class="rs-button" type="button" :disabled="current >= count || turning || loading" @click="flip(current + 1)">下一页 ›</button>
@@ -182,7 +213,7 @@ header h2 { margin:1px 0 0; font-size:16px; overflow-wrap:anywhere; }
 .resume-fullscreen .paper-face { border-radius:0; }
 .resume-fullscreen footer { padding-top:8px; }
 .reader-kicker { color:var(--rs-primary-hover); font-size:10px; font-weight:720; letter-spacing:.06em; }
-.reader-actions { display:flex; align-items:center; gap:12px; white-space:nowrap; font-size:13px; }
+.reader-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; white-space:nowrap; font-size:13px; }
 .reader-zoom { display:flex; align-items:center; height:29px; overflow:hidden; border:1px solid #cfe0dd; border-radius:8px; background:white; }
 .reader-zoom button { width:29px; height:27px; border:0; background:transparent; color:var(--rs-primary-hover); cursor:pointer; font-size:17px; line-height:1; }
 .reader-zoom button:hover:not(:disabled) { background:var(--rs-primary-soft); }
@@ -191,6 +222,7 @@ header h2 { margin:1px 0 0; font-size:16px; overflow-wrap:anywhere; }
 .reader-close { border:none; border-radius:9px; width:33px; height:33px; font-size:22px; background:var(--rs-primary-soft); color:var(--rs-primary-hover); cursor:pointer; transition:transform var(--rs-motion-fast),background-color var(--rs-motion-fast); }
 .reader-close:hover { background:#d7efea;transform:scale(1.04); }
 .reader-body { display:grid; place-items:center; min-height:0; padding:12px; overflow:hidden; }
+.original-pdf { display:block; width:100%; height:100%; min-height:0; border:0; background:#fff; }
 .paper { border:0; background:none; color:inherit; padding:0; width:100%; height:100%; min-height:0; min-width:0; container-type:size; perspective:1700px; cursor:pointer; }
 .paper:disabled { cursor:default; }
 .paper-rotation { position:relative; display:block; width:100%; height:100%; transform-style:preserve-3d; }

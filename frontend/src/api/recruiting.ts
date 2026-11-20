@@ -93,7 +93,7 @@ export async function pollAttachment(id:string):Promise<AnalysisAttachment> {
 export async function runAnalysis(body:AnalysisRequest, onEvent:(event:AnalysisEvent)=>void, signal:AbortSignal) {
   const token=getSessionToken()
   const response = await fetch('/api/v1/workspace/analysis', {
-    method:'POST', signal, cache:'no-store', headers:{'Content-Type':'application/json','X-Session-Token':token},
+    method:'POST', signal, cache:'no-store', headers:{'Content-Type':'application/json','Accept':'text/event-stream','X-Session-Token':token},
     body:JSON.stringify(body),
   })
   if (response.status===401) {
@@ -117,8 +117,8 @@ export async function runAnalysis(body:AnalysisRequest, onEvent:(event:AnalysisE
       while (newline >= 0) {
         const row = pending.slice(0,newline)
         pending = pending.slice(newline+1)
-        if (row) {
-          const event = JSON.parse(row) as AnalysisEvent
+        if (row && (row.startsWith('data: ') || !row.startsWith(':') && !row.startsWith('event:'))) {
+          const event = JSON.parse(row.startsWith('data: ') ? row.slice(6) : row) as AnalysisEvent
           if(event.event==='done') doneEvent=true
           onEvent(event)
         }

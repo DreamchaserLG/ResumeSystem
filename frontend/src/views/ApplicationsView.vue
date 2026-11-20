@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import { FunnelOutline, CloudUploadOutline, ChevronBackOutline, DocumentTextOutline, AttachOutline, CalendarOutline, SparklesOutline, EllipsisHorizontal } from '@vicons/ionicons5'
-import { ElButton, ElDialog, ElDropdown, ElDropdownMenu, ElDropdownItem, ElInput, ElOption, ElPagination, ElSelect, ElTag, ElMessage } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
+import { RefreshOutline, ChevronBackOutline, DocumentTextOutline, EllipsisHorizontal, GitNetworkOutline } from '@vicons/ionicons5'
+import { ElButton, ElDropdown, ElDropdownMenu, ElDropdownItem, ElPagination, ElTag, ElMessage } from 'element-plus'
 import { api } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
 import { readResumeView, saveResumeView } from '@/api/session'
-import { dateLabel, label, locationText, schoolTagLabels, type Detail, type Job, type ResumeCard, type ResumeCardPage, type TransferJob } from '@/api/hr'
-import { followupPath, jobDirectory, type Followup, type MatchReport, type NotePage } from '@/api/recruiting'
+import { dateLabel, label, locationText, schoolTagLabels, type Detail, type Job, type ResumeCard, type ResumeCardPage, type Options } from '@/api/hr'
+import { jobDirectory } from '@/api/recruiting'
+import { addTalent, talentStatusOptions, type TalentStatusOption } from '@/api/talent'
 import ResumeBook from '@/components/ResumeBook.vue'
-import ResumeFilters, { type FilterSelection } from '@/components/ResumeFilters.vue'
-import ResumeBatchImport from '@/components/ResumeBatchImport.vue'
+import CandidateFilterMenu from '@/components/CandidateFilterMenu.vue'
+import CandidateListCard from '@/components/CandidateListCard.vue'
+import { filterSearchBody, type FilterSelection } from '@/components/ResumeFilters.vue'
 
 const route=useRoute(), router=useRouter()
+const auth=useAuthStore()
 const positive=(value:unknown)=>{
   if(typeof value!=='string' || !/^\d+$/.test(value)) return undefined
   const number=Number(value)
@@ -19,59 +23,58 @@ const positive=(value:unknown)=>{
 }
 const incomingJob=computed(()=>positive(route.query.job))
 const incomingCandidate=computed(()=>positive(route.query.candidate))
-const incomingDepartment=computed(()=>positive(route.query.department))
-type ResumeTab='overview'|'resume'|'fields'|'notes'
-type SavedView={path:string; page:number; sort:'recent'|'match'; filters:FilterSelection;
+const incomingDepartment=computed(()=>auth.isSuperAdmin ? positive(route.query.department) : undefined)
+type ResumeTab='overview'|'resume'|'fields'
+type SavedView={path:string; page:number; filters:FilterSelection;
   tab:ResumeTab; candidate?:number; mobileDetails?:boolean; listWidth?:number; detailWidth?:number; widthTuned?:boolean; viewportWidth?:number}
 let restored:SavedView|undefined
 try {
   const saved=JSON.parse(readResumeView() || 'null') as SavedView|null
   if(saved?.path===route.fullPath) restored=saved
 } catch { /* Invalid browser state falls back to the route defaults. */ }
-const departmentName=computed(()=>directoryDepartments.value.find(item=>item.id===incomingDepartment.value)?.name)
 const directoryDepartments=ref<{id:number;name:string}[]>([])
 const jobs=ref<Job[]>([])
+const capabilities=ref<{code:string;name:string}[]>([])
 const list=ref<ResumeCard[]>([])
 const current=ref<ResumeCard>()
 const details=ref<Detail>()
-const notes=ref<Followup[]>([])
-const nextNote=ref<number|null>(null)
-const report=ref<MatchReport>()
 const page=ref(restored?.page || 1)
 const size=ref(15)
 const total=ref(0)
-const sort=ref<'recent'|'match'>(restored?.sort || 'recent')
 const available=ref<string[]>([])
-const followupOptions=ref<string[]>([])
-const filters=ref<FilterSelection>(restored?.filters || (incomingJob.value?{job:[String(incomingJob.value)]}:{}))
-const filterOpen=ref(false)
-const filterButton=ref<InstanceType<typeof ElButton>>()
-const singleImportOpen=ref(false), batchImportOpen=ref(false)
-const singleUploading=ref(false), batchUploading=ref(false)
-onBeforeRouteLeave(()=>{
-  if(!singleUploading.value && !batchUploading.value) return true
-  ElMessage.warning('简历正在上传，提交后即可切换页面。')
-  return false
+const filters=ref<FilterSelection>({
+  degree:restored?.filters.degree, school:restored?.filters.school, domain:restored?.filters.domain,
+  capability:restored?.filters.capability, salaryRange:restored?.filters.salaryRange,
+  jobs:restored?.filters.jobs,
+  experienceRange:restored?.filters.experienceRange,
+  department:auth.isSuperAdmin ? incomingDepartment.value ?? restored?.filters.department : undefined,
 })
-const listLoading=ref(false), detailLoading=ref(false), publishing=ref(false), matching=ref(false)
+const statuses=ref<TalentStatusOption[]>([])
+const listLoading=ref(false), detailLoading=ref(false)
 const error=ref(''), detailError=ref('')
 const tab=ref<ResumeTab>(restored?.tab || 'overview')
-const rankable=computed(()=>filters.value.job?.length===1)
-const noteBody=ref('')
-const noteAttachment=ref<File>()
-const noteField=ref<HTMLTextAreaElement>()
-const noteFile=ref<HTMLInputElement>()
-const mentionsOpen=ref(false)
-const collaborators=ref<{id:number;display_name:string}[]>([])
+const talentAdding=ref(false)
 const evidenceGroups=computed(()=>{
   const result = new Map<string,Detail['evidence']>()
   for(const entry of details.value?.evidence || []) {
     const key=entry.field_key.split('.')[0]
+    if(key==='project') continue
     const group=result.get(key) || []
     if(group.length<18) group.push(entry)
     result.set(key,group)
   }
   return [...result.entries()]
+})
+const projectGroups=computed(()=>{
+  const projects=new Map<number, {header:Detail['evidence']; description:string[]}>()
+  for(const entry of details.value?.evidence || []) {
+    if(!entry.field_key.startsWith('project.')) continue
+    let project=projects.get(entry.record_no)
+    if(!project){project={header:[],description:[]};projects.set(entry.record_no,project)}
+    if(entry.field_key==='project.description') project.description.push(entry.text)
+    else project.header.push(entry)
+  }
+  return [...projects.entries()]
 })
 const groupNames:Record<string,string>={profile:'基本信息',work:'工作经历',education:'教育背景',project:'项目经历',skill:'技能',contact:'联系方式'}
 const candidateOverview=computed(()=>{
@@ -95,13 +98,6 @@ const candidateOverview=computed(()=>{
     tags:row.tags.filter(item=>['language','capability','domain'].includes(item.type)),skills:skills.slice(0,12),
   }
 })
-const interviewOpen=ref(false)
-const interviewTime=ref('')
-const interviewText=ref('')
-const transferOpen=ref(false)
-const transferId=ref<number>()
-const transferReason=ref('')
-const destinations=ref<TransferJob[]>([])
 const bounded=(value:number|undefined,min:number,max:number,fallback:number)=>Math.min(max,Math.max(min,value ?? fallback))
 /* 打开工作台时按可用空间计算最合适的栏宽；用户拖动过的宽度只在同一屏幕宽度下沿用。 */
 const viewportWidth=()=>window.innerWidth-300
@@ -122,16 +118,20 @@ let listVersion=0
 let detailVersion=0
 let refreshTimer:ReturnType<typeof setTimeout>|undefined
 let dragEnd:(()=>void)|undefined
-const filterCount=computed(()=>{
-  const {salaryRange,experienceRange,...facets}=filters.value
-  return Object.values(facets).reduce((count,values)=>count+(values?.length ?? 0),0)
-    + Number(Boolean(salaryRange)) + Number(Boolean(experienceRange))
+const menuFilters=computed(()=>{
+  const shortcut=jobs.value.find(job=>job.id===incomingJob.value)
+  if (!shortcut) return filters.value
+  return { ...filters.value, jobs:[String(shortcut.id)],
+    department:auth.isSuperAdmin ? filters.value.department ?? shortcut.department_id : undefined }
 })
 const displayName=(row:ResumeCard)=>row.name || '申请 #'+row.id
-const degreeOf=(row:ResumeCard)=>{const tag=row.tags.find(item=>item.type==='degree');return tag?label(tag.value):''}
-const latestMatch=computed(()=>report.value?.matches[0])
-const currentPageCount=computed(()=>list.value.length)
-function resetDraft() { noteBody.value='';noteAttachment.value=undefined;mentionsOpen.value=false;detailError.value='' }
+const currentMatchHits=computed(()=>current.value?.match_skills?.filter(skill=>skill.matched).length ?? 0)
+
+function followupStatus(row:ResumeCard) {
+  const option=statuses.value.find(status=>status.code===row.talent_status)
+  if (row.in_talent) return {label:row.talent_status_label || option?.label || '待跟进',color:option?.color || '#64748b'}
+  return row.latest_note ? {label:'已跟进',color:'#22694d'} : {label:'未跟进',color:'#64748b'}
+}
 
 async function pick(row:ResumeCard, bringForward=true) {
   if(bringForward) mobileDetails.value=true
@@ -145,21 +145,17 @@ async function pick(row:ResumeCard, bringForward=true) {
   current.value=row
   if(avatar.value) URL.revokeObjectURL(avatar.value)
   avatar.value=''
-  details.value=undefined; notes.value=[]; nextNote.value=null; report.value=undefined
-  resetDraft();detailLoading.value=true;matching.value=false
+  details.value=undefined
+  detailError.value=''
+  detailLoading.value=true
   const requests = [
     api.get<Detail>('/hr/applications/'+id),
-    api.get<NotePage>(followupPath(id)),
-    api.get<MatchReport|null>('/workspace/applications/'+id+'/match'),
     row.has_avatar && row.version_id ? api.get<Blob>('/hr/applications/'+id+'/avatar?version='+row.version_id) : Promise.resolve(undefined),
   ] as const
-  const [detail, history, match, photo]=await Promise.allSettled(requests)
+  const [detail, photo]=await Promise.allSettled(requests)
   if(sequence!==detailVersion) return
   if(detail.status==='fulfilled') details.value=detail.value
   else detailError.value=(detail.reason as Error).message
-  if(history.status==='fulfilled'){notes.value=history.value.items;nextNote.value=history.value.next}
-  else if(!detailError.value) detailError.value=(history.reason as Error).message
-  if(match.status==='fulfilled') report.value=match.value || undefined
   if(photo.status==='fulfilled' && photo.value) avatar.value=URL.createObjectURL(photo.value)
   detailLoading.value=false
 }
@@ -167,8 +163,6 @@ async function pick(row:ResumeCard, bringForward=true) {
 function resetCurrent() {
   current.value=undefined
   details.value=undefined
-  notes.value=[]
-  report.value=undefined
   detailVersion++
   if(avatar.value) URL.revokeObjectURL(avatar.value)
   avatar.value=''
@@ -177,15 +171,10 @@ async function load(preferred?:number, bringForward?:boolean) {
   const sequence=++listVersion
   if(refreshTimer) clearTimeout(refreshTimer)
   listLoading.value=true;error.value=''
-  const {job,followup,salaryRange,experienceRange,...facets}=filters.value
   try {
     const records=await api.post<ResumeCardPage>('/hr/resume-cards/search',{
-      page:page.value,size:size.value,sort:rankable.value?sort.value:'recent',facets,
-      job_ids:job?.map(Number) || [],department_id:incomingDepartment.value,
-      salary_min:salaryRange?.[0],salary_max:salaryRange?.[1],
-      experience_min_months:experienceRange?.[0],experience_max_months:experienceRange?.[1],
-      followup:followup?.find(value=>value==='recorded' || value==='unrecorded') || null,
-      followup_values:followup?.filter(value=>value.startsWith('note:')).map(value=>value.slice(5)) || [],
+      ...filterSearchBody(filters.value),page:page.value,size:size.value,job_id:incomingJob.value,
+      department_id:auth.isSuperAdmin ? filters.value.department : undefined,
     })
     if(sequence!==listVersion) return
     list.value=records.items
@@ -212,12 +201,12 @@ async function load(preferred?:number, bringForward?:boolean) {
 }
 async function applyFilters(values:FilterSelection) {
   filters.value=values
-  if(!rankable.value) sort.value='recent'
-  if(route.query.job || route.query.candidate) {
+  if(route.query.job || route.query.candidate || route.query.department) {
     // Preserve new filter selections when removing the shortcut in the URL.
     const query={...route.query}
     delete query.job
     delete query.candidate
+    delete query.department
     ignoredRoute=true
     try {await router.replace({name:'applications',query})}
     finally {ignoredRoute=false}
@@ -227,29 +216,29 @@ async function applyFilters(values:FilterSelection) {
   else void load()
 }
 let ignoredRoute=false
-watch([incomingJob,incomingCandidate,incomingDepartment],([job,candidate],previous)=>{
+watch([incomingJob,incomingCandidate,incomingDepartment],([,candidate,department])=>{
   if(ignoredRoute) return
-  if(job) filters.value={...filters.value,job:[String(job)]}
-  else if(previous[0] || previous[2]!==incomingDepartment.value) filters.value={...filters.value,job:undefined}
-  if(!rankable.value) sort.value='recent'
+  filters.value={...filters.value,department,jobs:undefined}
   if(page.value!==1) page.value=1
   else void load(candidate)
 })
-watch([page,size,sort],()=>void load())
-watch([page,sort,filters,tab,()=>current.value?.id,mobileDetails,listWidth,detailWidth],()=>{
+watch([page,size],()=>void load())
+watch([page,filters,tab,()=>current.value?.id,mobileDetails,listWidth,detailWidth],()=>{
   if(route.name!=='applications') return
-  const {followup,...selection}=filters.value
-  // Save filters and references only; never save the resume or any free-text follow-up.
-  const flags=followup?.filter(value=>value==='recorded'||value==='unrecorded')
-  saveResumeView(JSON.stringify({path:route.fullPath,page:page.value,sort:sort.value,
-    filters:{...selection,followup:flags?.length?flags:undefined},
+  saveResumeView(JSON.stringify({path:route.fullPath,page:page.value,
+    filters:filters.value,
     tab:tab.value,candidate:current.value?.id,mobileDetails:mobileDetails.value,
     listWidth:listWidth.value,detailWidth:detailWidth.value,widthTuned:widthTuned.value,
     viewportWidth:window.innerWidth} satisfies SavedView))
 },{deep:true,flush:'post'})
 onMounted(()=>{
   void load(restored?.candidate,restored?.mobileDetails)
-  jobDirectory().then(result=>{jobs.value=result.items;directoryDepartments.value=result.departments}).catch(cause=>{error.value=(cause as Error).message})
+  api.get<Options>('/hr/options').then(result=>{
+    capabilities.value=result.capabilities || []
+    directoryDepartments.value=result.departments
+  }).catch(cause=>{error.value=(cause as Error).message})
+  jobDirectory().then(result=>{jobs.value=result.items}).catch(cause=>{error.value=(cause as Error).message})
+  talentStatusOptions().then(result=>{statuses.value=result}).catch(cause=>{error.value=(cause as Error).message})
   if(!widthTuned.value) void nextTick(()=>{
     const workspace=candidateWorkspace.value?.clientWidth
     if(workspace) listWidth.value=fitWidth(workspace,.26,260,Math.min(520,Math.max(260,workspace-720)))
@@ -264,38 +253,6 @@ onBeforeUnmount(()=>{
   dragEnd?.()
 })
 
-function closeFilters() {
-  filterOpen.value=false
-  void nextTick(()=>filterButton.value?.$el.focus())
-}
-function confirmFilters(values:FilterSelection) {
-  closeFilters()
-  void applyFilters(values)
-}
-async function viewImport(job:number,id:number) {
-  filters.value={job:[String(job)]}
-  page.value=1
-  await router.replace({name:'applications',query:{job:String(job),candidate:String(id)}})
-  await load(id)
-}
-function changeSort() {
-  if(!rankable.value){
-    ElMessage.info('请在筛选中选择一个岗位，再按岗位相关性排序。')
-    void openFilters()
-    return
-  }
-  page.value=1
-  sort.value='match'
-}
-async function openFilters() {
-  if(filterOpen.value) {closeFilters();return}
-  filterOpen.value=true
-  try {
-    const result=await api.get<{items:string[]}>('/workspace/followup-options')
-    const selected=(filters.value.followup || []).filter(value=>value.startsWith('note:')).map(value=>value.slice(5))
-    followupOptions.value=[...new Set([...selected,...result.items])]
-  } catch { followupOptions.value=[] }
-}
 function horizontalResize(event:PointerEvent,current:number,min:number,max:number,update:(value:number)=>void) {
   if(event.button!==0) return
   dragEnd?.()
@@ -326,73 +283,19 @@ function resizeDetail(event:PointerEvent) {
 }
 function nudgeList(delta:number) {widthTuned.value=true;listWidth.value=Math.min(520,Math.max(260,listWidth.value+delta))}
 function nudgeDetail(delta:number) {widthTuned.value=true;detailWidth.value=Math.min(780,Math.max(340,detailWidth.value+delta))}
-async function focusFollowup() {
-  tab.value='notes'
-  await nextTick()
-  noteField.value?.focus()
-}
-async function toggleMentions() {
-  if(mentionsOpen.value){mentionsOpen.value=false;return}
-  const id=current.value?.id
-  if(!id) return
+async function putInTalent() {
+  const row=current.value
+  if(!row || talentAdding.value) return
+  talentAdding.value=true;detailError.value=''
   try {
-    const data=await api.get<{items:{id:number;display_name:string}[]}>('/workspace/applications/'+id+'/collaborators')
-    if(current.value?.id===id){collaborators.value=data.items;mentionsOpen.value=true}
+    const result=await addTalent({ application_id: row.id })
+    // 复制语义：更新本地卡片的人才库标识
+    if(current.value?.id===row.id) current.value.in_talent=true
+    for(const item of list.value) if(item.id===row.id) item.in_talent=true
+    ElMessage.success(result.duplicate ? '该候选人已在人才库中' : '已放入人才库')
+    void load(current.value?.id)
   } catch(cause){detailError.value=(cause as Error).message}
-}
-function mention(name:string) {
-  const field=noteField.value
-  const position=field?.selectionStart ?? noteBody.value.length
-  const ending=field?.selectionEnd ?? position
-  const suffix='@'+name+' '
-  noteBody.value=(noteBody.value.slice(0,position)+suffix+noteBody.value.slice(ending)).slice(0,1000)
-  mentionsOpen.value=false
-  void nextTick(()=>{field?.focus();field?.setSelectionRange(position+suffix.length,position+suffix.length)})
-}
-async function moreNotes() {
-  const id=current.value?.id
-  const before=nextNote.value
-  if(!id || !before) return
-  try {
-    const data=await api.get<NotePage>(followupPath(id)+'?before='+before)
-    if(current.value?.id===id && nextNote.value===before){notes.value.push(...data.items);nextNote.value=data.next}
-  } catch(cause){detailError.value=(cause as Error).message}
-}
-async function publish(action:'note'|'interview') {
-  const id=current.value?.id
-  const value=(action==='note'?noteBody.value:interviewText.value).trim()
-  if(!id || !value || publishing.value || (action==='interview' && !interviewTime.value))return
-  const data=new FormData()
-  data.append('content',value)
-  data.append('action',action)
-  if(action==='interview') data.append('scheduled_at',new Date(interviewTime.value).toISOString())
-  else if(noteAttachment.value) data.append('attachment',noteAttachment.value)
-  publishing.value=true;detailError.value=''
-  try {
-    const record=await api.upload<Followup>(followupPath(id),data)
-    for(const row of list.value)if(row.id===id)row.latest_note=record.body
-    if(current.value?.id===id) {
-      current.value.latest_note=record.body
-      notes.value.unshift(record)
-      if(action==='note')resetDraft()
-      else interviewOpen.value=false
-    }
-    if(filters.value.followup?.length) void load()
-    ElMessage.success('跟进记录已保存')
-  } catch(cause){detailError.value=(cause as Error).message}
-  finally{publishing.value=false}
-}
-async function calculate() {
-  const id=current.value?.id
-  const generation=detailVersion
-  if(!id || matching.value) return
-  matching.value=true;detailError.value=''
-  try {
-    const result=await api.post<MatchReport>('/workspace/applications/'+id+'/match')
-    if(generation!==detailVersion) return
-    report.value=result
-  } catch(cause){if(generation===detailVersion)detailError.value=(cause as Error).message}
-  finally{if(generation===detailVersion)matching.value=false}
+  finally{talentAdding.value=false}
 }
 async function command(action:string) {
   const id=current.value?.id
@@ -403,24 +306,8 @@ async function command(action:string) {
       await api.post('/hr/applications/'+id+'/reparse')
       await load(id)
       ElMessage.success('已提交重新解析')
-    } else if(action==='transfer'){
-      const options=await api.get<{items:TransferJob[]}>('/hr/applications/'+id+'/transfer-options')
-      if(current.value?.id===id){destinations.value=options.items;transferId.value=undefined;transferReason.value='';transferOpen.value=true}
     } else if(action==='download') await api.download('/hr/applications/'+id+'/original')
   } catch(cause){detailError.value=(cause as Error).message}
-}
-async function transfer() {
-  const row=current.value
-  if(!row || !transferId.value || !transferReason.value.trim() || publishing.value)return
-  publishing.value=true;detailError.value=''
-  try {
-    const id=transferId.value
-    await api.post('/hr/applications/'+row.id+'/transfer',{job_id:id,reason:transferReason.value,workflow_version:row.workflow_version})
-    transferOpen.value=false
-    await applyFilters({...filters.value,job:[String(id)]})
-    ElMessage.success('已调剂到目标岗位')
-  } catch(cause){detailError.value=(cause as Error).message}
-  finally{publishing.value=false}
 }
 function tagValue(tag:ResumeCard['tags'][number]) {
   if(tag.type==='school') return tag.value.startsWith('qs-')?'QS #'+tag.value.slice(3):schoolTagLabels[tag.value] || tag.value
@@ -435,53 +322,28 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 <template>
   <main class="hire-page candidate-page">
     <header class="hire-heading">
-      <div><h1>简历管理</h1><p v-if="departmentName">{{ departmentName }} ·
-        <RouterLink class="hire-inline-button" :to="{name:'applications'}">查看全部简历</RouterLink></p>
-        <p v-else>集中查看简历与候选人跟进记录</p></div>
-      <div class="import-actions">
-        <ElButton :icon="DocumentTextOutline" @click="singleImportOpen=true">单份导入</ElButton>
-        <ElButton type="primary" :icon="CloudUploadOutline" @click="batchImportOpen=true">批量导入</ElButton>
-      </div>
+      <div><h1>简历管理</h1><p>简历由部门共享目录自动入库</p></div>
+      <ElButton :icon="RefreshOutline" :loading="listLoading" @click="load()">刷新简历</ElButton>
     </header>
     <p v-if="error" class="hire-error candidate-error" role="alert">{{ error }} <button class="hire-inline-button" @click="load()">重试</button></p>
 
     <div ref="candidateWorkspace" class="candidate-workspace hire-surface" :style="{'--candidate-width':listWidth+'px'}"
       :class="{ 'mobile-details':mobileDetails && current }">
       <aside class="candidate-aside" aria-label="候选人列表">
-        <header v-show="!filterOpen" class="candidate-toolbar">
+        <header class="candidate-toolbar">
             <div class="candidate-toolbar-main"><strong>候选人</strong><span>{{ total }}</span>
-              <ElButton ref="filterButton" :icon="FunnelOutline" :type="filterOpen || filterCount?'primary':'default'"
-                :plain="filterOpen || !!filterCount" :aria-expanded="filterOpen"
-                :aria-controls="filterOpen?'candidate-filter-panel':undefined" @click="openFilters">
-                {{ filterOpen ? '收起' : '筛选' }} <b v-if="filterCount" class="filter-count">{{ filterCount }}</b>
-              </ElButton>
-            </div>
-            <div v-show="!filterOpen" class="candidate-sort" aria-label="候选人排序">
-              <button type="button" :aria-pressed="sort==='recent'" @click="sort='recent'">最近导入</button>
-              <button type="button" :aria-pressed="rankable && sort==='match'" @click="changeSort">按岗位相关性</button>
-              <button v-if="filterCount" type="button" class="clear-filters" @click="applyFilters({})">清空</button>
+              <CandidateFilterMenu title="筛选简历" :selected="menuFilters" :available="available" :capabilities="capabilities"
+                :jobs="jobs" :requires-department="auth.isSuperAdmin"
+                :departments="auth.isSuperAdmin ? directoryDepartments : []" @apply="applyFilters"/>
             </div>
         </header>
-          <ResumeFilters v-if="filterOpen" :selected="filters" :available="available" :jobs="jobs" :followups="followupOptions"
-            @apply="confirmFilters" @close="closeFilters()"/>
-          <div v-show="!filterOpen" ref="candidateScroll" class="candidate-list" :aria-busy="listLoading">
-            <button v-for="row in list" :key="row.id" type="button" class="candidate-row" :aria-current="current?.id===row.id?'true':undefined"
-              @click="tab='overview';pick(row)">
-              <span class="candidate-main">
-                <span class="candidate-row-top">
-                  <strong>{{ displayName(row) }}</strong>
-                  <span v-if="degreeOf(row)" class="candidate-degree">{{ degreeOf(row) }}</span>
-                  <small v-if="['parsing','parsed','failed'].includes(row.parse_status)">{{ label(row.parse_status) }}</small>
-                </span>
-                <span class="candidate-job">{{ row.job_title }}</span>
-              </span>
-              <span v-if="row.latest_note" class="latest-note" :title="row.latest_note">
-                <em>最近跟进</em><span>{{ row.latest_note }}</span>
-              </span>
-            </button>
-            <p v-if="!currentPageCount" class="hire-empty">{{ listLoading?'正在加载简历…':'没有符合条件的候选人' }}</p>
+          <div ref="candidateScroll" class="candidate-list" :aria-busy="listLoading">
+            <CandidateListCard v-for="row in list" :key="row.id" :row="row" :active="current?.id===row.id"
+              appearance="resume" :status-label="followupStatus(row).label" :status-color="followupStatus(row).color"
+              @select="tab='overview';pick(row)"/>
+            <p v-if="!list.length" class="hire-empty">{{ listLoading?'正在加载简历…':'没有符合条件的候选人' }}</p>
           </div>
-          <footer v-show="!filterOpen" class="candidate-pagination"><span>{{ total }} 份</span><ElPagination v-model:current-page="page" :page-size="size" :total="total" layout="prev, pager, next" :pager-count="3" small/></footer>
+          <footer class="candidate-pagination"><span>{{ total }} 份</span><ElPagination v-model:current-page="page" :page-size="size" :total="total" layout="prev, pager, next" :pager-count="3" small/></footer>
       </aside>
       <div class="candidate-resize" role="separator" aria-label="调整列表宽度" aria-orientation="vertical" tabindex="0"
         title="拖动调整候选人栏宽度" :aria-valuemin="260" :aria-valuemax="520" :aria-valuenow="listWidth" @pointerdown="resizeList"
@@ -495,17 +357,17 @@ function tagValue(tag:ResumeCard['tags'][number]) {
                 <header class="candidate-detail-header">
                   <button v-if="mobileDetails" type="button" class="aside-toggle mobile-back" aria-label="返回候选列表" @click="mobileDetails=false"><ChevronBackOutline/></button>
                   <span class="candidate-avatar"><img v-if="avatar" :src="avatar" alt="候选人头像"><i v-else class="avatar-fallback" aria-hidden="true">{{ displayName(current).slice(0,2) }}</i></span>
-                  <div class="candidate-identity"><h2>{{ displayName(current) }}</h2>
+                  <div class="candidate-identity"><h2>{{ displayName(current) }}
+                    <span v-if="current.in_talent" class="talent-badge">已入人才库</span></h2>
                     <p>{{ current.job_title }} <span>· 申请 #{{ current.id }}</span></p></div>
                   <div class="hire-toolbar candidate-action">
-                    <ElButton type="primary" :icon="CalendarOutline" @click="interviewTime='';interviewText='';detailError='';interviewOpen=true">安排面试</ElButton>
-                    <ElButton @click="focusFollowup">写跟进</ElButton>
+                    <ElButton type="primary" :icon="GitNetworkOutline" :loading="talentAdding" :disabled="current.in_talent || !current.version_id" @click="putInTalent">
+                      {{ current.in_talent ? '已在人才库' : '放入人才库' }}</ElButton>
                     <ElDropdown trigger="click" @command="command">
                       <ElButton aria-label="更多简历操作" :icon="EllipsisHorizontal"/>
                       <template #dropdown><ElDropdownMenu>
                         <ElDropdownItem command="download" :disabled="!current.version_id">下载原件</ElDropdownItem>
                         <ElDropdownItem command="reparse">重新解析</ElDropdownItem>
-                        <ElDropdownItem command="transfer">调剂岗位</ElDropdownItem>
                       </ElDropdownMenu></template>
                     </ElDropdown>
                   </div>
@@ -514,12 +376,28 @@ function tagValue(tag:ResumeCard['tags'][number]) {
                   <button type="button" :aria-pressed="tab==='overview'" @click="tab='overview'">候选概览</button>
                   <button class="compact-preview-tab" type="button" :aria-pressed="tab==='resume'" @click="tab='resume'">简历原文</button>
                   <button type="button" :aria-pressed="tab==='fields'" @click="tab='fields'">结构化字段</button>
-                  <button type="button" :aria-pressed="tab==='notes'" @click="tab='notes'">跟进记录 <small v-if="notes.length">{{ notes.length }}{{ nextNote?'+':'' }}</small></button>
                 </nav>
               </div>
               <div class="candidate-context-scroll">
                 <p v-if="detailError" class="hire-error" role="alert">{{ detailError }}</p>
               <template v-if="tab==='overview' || tab==='resume'">
+                <section class="candidate-match" aria-labelledby="candidate-match-title">
+                  <div class="match-heading"><h3 id="candidate-match-title">岗位匹配度</h3>
+                    <strong v-if="current.match_percent!=null">{{ current.match_percent }}%</strong>
+                  </div>
+                  <p v-if="current.match_skills?.length" class="match-caption">
+                    {{ current.job_title }} · {{ currentMatchHits }} / {{ current.match_skills.length }} 项有简历证据
+                  </p>
+                  <table v-if="current.match_skills?.length" class="match-table">
+                    <thead><tr><th scope="col">岗位技能要求</th><th scope="col">核对结果</th></tr></thead>
+                    <tbody><tr v-for="skill in current.match_skills" :key="skill.name">
+                      <th scope="row">{{ skill.name }}</th>
+                      <td><span :class="{'match-met':skill.matched}">{{ skill.matched ? '有证据' : '待核实' }}</span></td>
+                    </tr></tbody>
+                  </table>
+                  <p v-else-if="current.match_percent!=null" class="match-caption">{{ current.job_title }} · 岗位技能匹配</p>
+                  <p v-else class="match-caption">{{ !current.job_id ? '关联岗位后显示匹配结果。' : !current.version_id ? '简历解析完成后显示匹配结果。' : '当前岗位暂无可核验的技能要求。' }}</p>
+                </section>
                 <section v-if="candidateOverview" class="candidate-info" aria-label="基本信息">
                   <h3>基本信息</h3>
                   <dl class="candidate-summary">
@@ -551,142 +429,57 @@ function tagValue(tag:ResumeCard['tags'][number]) {
                     </div>
                   </div>
                 </section>
-                <section class="candidate-match" aria-label="AI 匹配摘要">
-                  <div class="match-heading"><SparklesOutline aria-hidden="true"/><h3>AI 匹配摘要</h3>
-                    <ElButton text type="primary" :loading="matching" :disabled="!current.version_id" @click="calculate">{{ latestMatch?'重新生成':'生成摘要' }}</ElButton>
-                  </div>
-                  <template v-if="latestMatch">
-                    <p v-if="report?.summary" class="candidate-match-text">{{ report.summary }}</p>
-                    <small v-if="report?.summary" class="summary-source">{{ report.summary_source==='llm'?'模型整理 · 来自简历证据':'依据简历证据整理' }}</small>
-                    <div class="match-tags">
-                      <ElTag v-for="skill in latestMatch.hits" :key="skill" size="small" type="success" effect="light">{{ skill }}</ElTag>
-                    </div>
-                  </template>
-                  <p v-else class="hire-muted">暂无匹配摘要，生成后将基于简历证据整理匹配项。</p>
-                </section>
-                <section class="candidate-recent" aria-label="最近跟进">
-                  <div class="match-heading"><h3>最近跟进</h3><ElButton text type="primary" @click="tab='notes'">查看记录</ElButton></div>
-                  <template v-if="notes[0]">
-                    <p>{{ notes[0].body }}</p>
-                    <small>{{ notes[0].author_name }} · {{ dateLabel(notes[0].created_at) }}</small>
-                  </template>
-                  <p v-else class="hire-muted">{{ detailLoading?'正在载入跟进…':'暂无跟进记录' }}</p>
-                </section>
               </template>
           <section v-else-if="tab==='fields'" class="candidate-fields">
             <p v-if="detailLoading" class="hire-muted">正在载入结构化字段…</p>
-            <p v-else-if="!evidenceGroups.length" class="hire-empty">暂无可展示的结构化字段。</p>
+            <p v-else-if="!evidenceGroups.length && !projectGroups.length" class="hire-empty">暂无可展示的结构化字段。</p>
             <section v-for="[key,fields] in evidenceGroups" :key="key"><h3>{{ groupNames[key] || key }}</h3>
               <dl><div v-for="entry in fields" :key="entry.field_key+':'+entry.record_no+':'+entry.span_no">
                 <dt>{{ label(entry.field_key) }} <small>{{ locationText(entry.locator) }}</small></dt><dd>{{ entry.text }}</dd>
               </div></dl>
             </section>
-          </section>
-          <section v-else class="candidate-notes" aria-label="跟进历史与备注">
-            <p v-if="!notes.length" class="hire-muted">{{ detailLoading?'正在载入跟进记录…':'暂无跟进记录' }}</p>
-            <ol v-else class="note-timeline">
-              <li v-for="note in notes" :key="note.id">
-                <div class="note-meta"><strong>{{ note.author_name }}</strong><time :datetime="note.created_at">{{ dateLabel(note.created_at) }}</time></div>
-                <p v-if="note.scheduled_at" class="note-scheduled">面试安排 · {{ dateLabel(note.scheduled_at) }}</p>
-                <p class="note-text">{{ note.body }}</p>
-                <button v-if="note.attachment_name" type="button" class="note-download hire-inline-button"
-                  @click="api.download(followupPath(current!.id)+'/'+note.id+'/attachment').catch(e=>detailError=e.message)"><AttachOutline/>{{ note.attachment_name }}</button>
-              </li>
-            </ol>
-            <ElButton v-if="nextNote" text type="primary" @click="moreNotes">加载更早记录</ElButton>
-            <form class="note-composer" @submit.prevent="publish('note')">
-              <label for="followup-text">自定义跟进备注</label>
-              <textarea id="followup-text" ref="noteField" v-model="noteBody" rows="3" maxlength="1000"
-                placeholder="输入跟进记录，如：张总已面过。Ctrl + Enter 发布" @keydown.ctrl.enter.prevent="publish('note')" @keydown.meta.enter.prevent="publish('note')"></textarea>
-              <div class="note-actions">
-                <input ref="noteFile" type="file" hidden accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,.txt"
-                  @change="noteAttachment=($event.target as HTMLInputElement).files?.[0];($event.target as HTMLInputElement).value=''">
-                <ElButton text :aria-expanded="mentionsOpen" @click="toggleMentions">@ 同事</ElButton>
-                <ElButton text :icon="AttachOutline" @click="noteFile?.click()">添加附件</ElButton>
-                <button v-if="noteAttachment" type="button" class="hire-inline-button" @click="noteAttachment=undefined">{{ noteAttachment.name }} ×</button>
-                <ElButton type="primary" native-type="submit" :loading="publishing" :disabled="!noteBody.trim()">发布备注</ElButton>
-              </div>
-              <div v-if="mentionsOpen" class="mention-list" aria-label="同部门同事">
-                <ElButton v-for="person in collaborators" :key="person.id" size="small" @click="mention(person.display_name)">{{ person.display_name }}</ElButton>
-                <p v-if="!collaborators.length" class="hire-muted">暂无可提及的同事。</p>
-              </div>
-            </form>
+            <section v-if="projectGroups.length" class="candidate-projects">
+              <h3>项目经历</h3>
+              <article v-for="[record,project] in projectGroups" :key="record">
+                <h4>{{ project.header.find(entry=>entry.field_key==='project.project_name')?.text || '项目' }}</h4>
+                <p v-if="project.header.some(entry=>entry.field_key!=='project.project_name')" class="project-meta">
+                  {{ project.header.filter(entry=>entry.field_key!=='project.project_name').map(entry=>entry.text).join(' · ') }}
+                </p>
+                <p v-if="project.description.length" class="project-description">{{ project.description.join('\n') }}</p>
+              </article>
+            </section>
           </section>
               </div>
             </div>
             <div class="candidate-document-resize" role="separator" aria-label="调整个人信息宽度" aria-orientation="vertical" tabindex="0"
               title="拖动调整个人信息与简历原文宽度" :aria-valuemin="340" :aria-valuemax="780" :aria-valuenow="detailWidth" @pointerdown="resizeDetail"
               @keydown.left.prevent="nudgeDetail(-12)" @keydown.right.prevent="nudgeDetail(12)"></div>
-            <ResumeBook class="candidate-reader" :resume="current" :avatar-url="avatar" embedded/>
+            <ResumeBook class="candidate-reader" :resume="current" :avatar-url="avatar" :pdf-original="details?.original_mime_type==='application/pdf'" embedded/>
           </div>
         </div>
       </section>
       <section v-else class="candidate-no-selection">
-        <DocumentTextOutline/><h2>查看候选人简历</h2><p>选择左侧候选人查看简历，或导入新的资料。</p>
-        <ElButton v-if="!total" @click="singleImportOpen=true">导入简历</ElButton>
+        <DocumentTextOutline/><h2>查看候选人简历</h2><p>文件服务器入库后的简历将在左侧显示。</p>
       </section>
     </div>
 
-    <ResumeBatchImport v-model="singleImportOpen" mode="single" :jobs="jobs" :preferred-job="Number(filters.job?.[0]) || undefined"
-      @updated="load()" @uploading="singleUploading=$event" @view="viewImport"/>
-    <ResumeBatchImport v-model="batchImportOpen" mode="batch" :jobs="jobs" :preferred-job="Number(filters.job?.[0]) || undefined"
-      @updated="load()" @uploading="batchUploading=$event" @view="viewImport"/>
-    <ElDialog v-model="interviewOpen" title="记录面试安排" width="min(480px, 95vw)" append-to-body>
-      <form id="interview-form" class="candidate-dialog" @submit.prevent="publish('interview')">
-        <p v-if="detailError" class="hire-error" role="alert">{{ detailError }}</p>
-        <label>面试时间<input v-model="interviewTime" type="datetime-local" required></label>
-        <label>跟进内容<ElInput v-model="interviewText" type="textarea" :rows="3" maxlength="1000" placeholder="例如：张总面试，已与候选人确认" required/></label>
-      </form>
-      <template #footer><ElButton @click="interviewOpen=false">取消</ElButton>
-        <ElButton type="primary" native-type="submit" form="interview-form" :loading="publishing" :disabled="!interviewTime || !interviewText.trim()">保存安排</ElButton></template>
-    </ElDialog>
-    <ElDialog v-model="transferOpen" title="调剂岗位" width="min(480px, 95vw)" append-to-body>
-      <form id="transfer-form" class="candidate-dialog" @submit.prevent="transfer">
-        <p v-if="detailError" class="hire-error" role="alert">{{ detailError }}</p>
-        <label>目标岗位<ElSelect v-model="transferId" aria-label="目标岗位" placeholder="选择招聘中岗位">
-          <ElOption v-for="job in destinations" :key="job.id" :label="job.department_name+' / '+job.title" :value="job.id"/>
-        </ElSelect></label>
-        <label>调剂原因<ElInput v-model="transferReason" type="textarea" :rows="3" maxlength="300" required/></label>
-      </form>
-      <template #footer><ElButton @click="transferOpen=false">取消</ElButton>
-        <ElButton type="primary" native-type="submit" form="transfer-form" :loading="publishing" :disabled="!transferId || !transferReason.trim()">确认调剂</ElButton></template>
-    </ElDialog>
   </main>
 </template>
 
 <style scoped>
 .candidate-page {max-width:none;height:100%;display:grid;grid-template-rows:auto minmax(0,1fr);min-height:480px}
-.import-actions {display:flex; flex-wrap:wrap; justify-content:end; gap:7px}
-.import-actions .el-button {margin:0}
 .candidate-page:has(.candidate-error){grid-template-rows:auto auto minmax(0,1fr)}
 .candidate-workspace {display:grid;grid-template-columns:min(var(--candidate-width),38%) 7px minmax(0,1fr);min-height:0;overflow:hidden}
 .candidate-aside {display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-height:0;min-width:0}
 .candidate-toolbar {position:relative;padding:12px;border-bottom:1px solid var(--hire-line);background:linear-gradient(180deg,#fff,#fbfdfd)}
-.candidate-toolbar-main,.candidate-row-top,.candidate-pagination,.note-meta,.note-actions{display:flex;align-items:center;gap:8px;min-width:0}
+.candidate-toolbar-main,.candidate-pagination{display:flex;align-items:center;gap:8px;min-width:0}
 .candidate-toolbar-main>span {font-size:12px;color:var(--hire-muted)}.candidate-toolbar-main>.el-button{margin-inline-start:auto}
 .aside-toggle{display:grid;place-items:center;width:30px;height:30px;border:1px solid var(--hire-line);border-radius:7px;background:white;color:var(--hire-accent-dark);cursor:pointer;flex:none;transition:background-color var(--rs-motion-fast),border-color var(--rs-motion-fast),transform var(--rs-motion-fast)}
 .aside-toggle:hover{background:var(--hire-soft);border-color:#9ac9c3;transform:scale(1.04)}
 .aside-toggle svg {width:14px;height:14px}
-.filter-count {text-align:center;min-width:17px;border-radius:9px;background:var(--hire-accent);color:white;font-size:11px;padding:2px 4px;margin-left:5px}
-.candidate-sort {clear:both;display:flex;gap:4px;margin-top:9px}
-.candidate-sort button {background:none;border:0;border-radius:6px;padding:5px 7px;color:var(--hire-muted);font-size:12px;cursor:pointer;transition:background-color var(--rs-motion-fast),color var(--rs-motion-fast)}
-.candidate-sort button[aria-pressed=true] {background:var(--hire-soft);color:var(--hire-accent-dark)}
-.candidate-sort .clear-filters{margin-left:auto;color:var(--hire-accent-dark)}
-.candidate-list {overflow:auto;min-width:0}
-.candidate-row {display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:12px 14px;
-  border:0;border-bottom:1px solid #edf0f2;border-inline-start:3px solid transparent;background:#fff;cursor:pointer;color:var(--hire-ink);transition:background-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast),transform var(--rs-motion-fast) var(--rs-ease)}
-.candidate-row:hover {background:#f4faf8;transform:translateX(2px)}
-.candidate-row[aria-current=true] {background:linear-gradient(90deg,#e9f8f4,#f6fbfa);border-inline-start-color:var(--hire-accent);box-shadow:inset 8px 0 18px rgba(13,137,126,.035)}
-.candidate-main {display:grid;gap:4px;flex:1;min-width:0}
-.candidate-row-top {font-size:14px;flex-wrap:nowrap;overflow:hidden}
-.candidate-row-top strong,.candidate-job{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.candidate-row-top strong {min-width:0;font-size:14.5px;color:#1d3b45}
-.candidate-row-top small{color:var(--hire-muted);font-size:12px}
-.candidate-degree {flex:none;padding:1px 8px;border:1px solid #d5e7e2;border-radius:20px;background:#f0f7f5;color:var(--hire-accent-dark);font-size:11px;font-weight:600;line-height:1.7}
-.candidate-job {font-size:13px;color:var(--hire-muted)}
-.latest-note {flex:none;width:clamp(108px,38%,210px);display:grid;gap:1px;padding:6px 9px;border-radius:8px;background:#eef6f5;color:#355e57;font-size:11.5px;line-height:1.45}
-.latest-note em {font-style:normal;font-size:9.5px;letter-spacing:.04em;color:#7d9c98}
-.latest-note span {display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;overflow-wrap:anywhere}
+.candidate-list {display:grid;align-content:start;gap:8px;padding:10px;overflow:auto;min-width:0;background:#f7faf9;scrollbar-width:thin}
+.talent-badge {flex:none;display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:20px;
+  background:linear-gradient(135deg,#e8f1ff,#f0e8ff);border:1px solid #c7d4f0;color:#4a5f9e;font-size:10.5px;font-weight:600;line-height:1.6;white-space:nowrap}
 .candidate-pagination{padding:9px 10px;justify-content:space-between;border-top:1px solid var(--hire-line)}
 .candidate-resize,.candidate-document-resize {position:relative;background:#edf2f2;cursor:col-resize;touch-action:none;outline:0}
 .candidate-resize::after,.candidate-document-resize::after {content:'';position:absolute;inset:50% auto auto 50%;width:2px;height:38px;border-radius:2px;background:#b8c9c8;transform:translate(-50%,-50%);transition:height var(--rs-motion-fast),background-color var(--rs-motion-fast),box-shadow var(--rs-motion-fast)}
@@ -721,13 +514,16 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .profile-skill-chip {padding:2px 7px;border:1px solid #dce5ea;border-radius:4px;background:#f3f6f8;
   color:#405569;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
 .candidate-match {background:linear-gradient(135deg,#f1faf7,#f8fbff);border-color:#dbece8}
-.match-heading {display:flex;align-items:center;gap:7px;min-height:27px}
-.match-heading h3 {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.match-heading svg {width:17px;height:17px;color:var(--hire-accent);flex:none}
-.match-heading :deep(.el-button.is-text){margin-inline-start:auto;flex:none;height:26px;padding:0 11px;border:1px solid var(--hire-accent);border-radius:7px;background:var(--hire-accent) !important;color:#fff !important;font-size:12px;font-weight:600}
-.match-heading :deep(.el-button.is-text:hover){border-color:var(--hire-accent-dark);background:var(--hire-accent-dark) !important;color:#fff !important}
-.match-heading :deep(.el-button.is-text.is-disabled){border-color:#c3dcd7;background:#c3dcd7 !important;color:#fff !important;opacity:.85}
-.candidate-match p,.candidate-recent p {margin:7px 0 3px;font-size:13px;line-height:1.65;overflow-wrap:anywhere}
+.match-heading {display:flex;align-items:center;justify-content:space-between;gap:7px;min-height:27px}
+.match-heading strong {color:#176c60;font-size:24px;font-variant-numeric:tabular-nums;line-height:1.2}
+.match-caption {margin:5px 0 0;color:#4d6b72;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.match-table {margin-top:10px;width:100%;border-collapse:collapse;text-align:start;font-size:12px}
+.match-table th,.match-table td {padding:7px 4px;border-bottom:1px solid #dceae7;text-align:start;overflow-wrap:anywhere}
+.match-table thead th {color:#536976;font-size:11px;font-weight:600}
+.match-table :is(th,td):last-child {width:78px;text-align:end}
+.match-table tbody th {font-weight:600}
+.match-table td span {white-space:nowrap;border-radius:5px;padding:2px 6px;background:#f4eee1;color:#805919}
+.match-table td .match-met {background:#e1f3e9;color:#216547}
 .candidate-recent p:not(.hire-muted) {white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .candidate-match .summary-source {display:inline-block;margin-top:2px;color:#4d6b72}
 .match-tags {display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}
@@ -752,6 +548,10 @@ function tagValue(tag:ResumeCard['tags'][number]) {
 .candidate-fields{display:grid;gap:12px}
 .candidate-fields section{background:white;border:1px solid var(--hire-line);border-radius:7px;padding:12px;font-size:13px}
 .candidate-fields h3{margin-bottom:7px;font-size:14px}.candidate-fields dl{display:grid;gap:7px}.candidate-fields dt{color:var(--hire-muted)}.candidate-fields dt small{font-size:10px}.candidate-fields dd{margin:3px 0 0;overflow-wrap:anywhere}
+.candidate-projects article+article{margin-top:13px;padding-top:13px;border-top:1px solid var(--hire-line)}
+.candidate-projects h4{font-size:13px}
+.project-meta{margin-top:3px;color:var(--hire-muted);font-size:12px}
+.project-description{margin-top:8px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
 .candidate-notes{display:grid;gap:10px}
 .note-timeline{padding:0;list-style:none}.note-timeline li{border-left:2px solid #b9d8d2;padding:0 0 12px 12px}
 .note-meta{font-size:13px}.note-meta time,.note-scheduled{color:#556a75;font-size:12px}

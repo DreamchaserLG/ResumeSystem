@@ -110,7 +110,8 @@ def process_resume(version_id: int):
             raise ValueError("未取得可用文本")
         from app.parsing.preview import render_preview
         try:
-            pages, avatar = render_preview(path, mime_type, pd, "avatar" in allowed)
+            # Generated files stay private; current preview policy is checked when served.
+            pages, avatar = render_preview(path, mime_type, pd, True)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
             logger.warning("Page preview could not be rendered for version %s", version_id)
             pages, avatar = [], None

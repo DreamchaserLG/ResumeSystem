@@ -1,0 +1,24 @@
+# Production overlay: mount the office share on the Docker host first.
+services:
+  worker:
+    environment:
+      RESUME_DROP_DIR: /data/resume-inbox
+    volumes:
+      - type: bind
+        source: ${RESUME_SHARE_DIR:?Set the mounted resume share path}
+        target: /data/resume-inbox
+        read_only: true
+        bind:
+          create_host_path: false
+  resume-scheduler:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: worker}
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      RESUME_DROP_DIR: /data/resume-inbox
+      RESUME_DROP_HOUR: ${RESUME_DROP_HOUR:-3}
+    command: ["celery", "-A", "worker.celery_app", "beat", "-l", "info", "--schedule=/tmp/resume-beat"]
+    restart: unless-stopped
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}

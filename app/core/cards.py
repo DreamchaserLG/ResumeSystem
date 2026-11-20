@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
 from app.core.extraction import norm
-from app.core.job_skills import catalog_for, recognize_job_skills
+from app.core.job_skills import catalog_for, job_skill_requirements
 from app.core.recruitment import stage
 from app.core.screening import SearchInput, VISIBLE, _like, _months, _terms, _trusted
 
@@ -37,7 +37,7 @@ class CardQuery(BaseModel):
     stage_key: str | None = Field(default=None, pattern=r"^(review|progress|rejected|hired|interview:[1-9][0-9]{0,17})$")
     query: str = Field(default="", max_length=200)
     tags: list[str] = Field(default_factory=list, max_length=10)
-    facets: dict[Literal["degree","experience","school","domain","salary"], list[str]] = Field(default_factory=dict, max_length=5)
+    facets: dict[Literal["degree","experience","school","domain","salary","capability"], list[str]] = Field(default_factory=dict, max_length=6)
     job_ids: list[Annotated[int,Field(gt=0)]] = Field(default_factory=list, max_length=100)
     followup: Literal["recorded","unrecorded"] | None = None
     followup_values: list[Annotated[str,Field(min_length=1,max_length=1000)]] = Field(default_factory=list,max_length=30)
@@ -92,7 +92,43 @@ def education_summary(session, version, policy):
     """), {"version":version,"policy":policy}).mappings()]
 
 
-def cards(session, auth, request, *, show_match=False):
+def _card_matches(session, rows, include_skills):
+    job_ids = {row["job_id"] for row in rows if row["job_id"] and row["version_id"]}
+    if not job_ids:
+        return {}
+    jobs = session.execute(text("""
+        SELECT id, jd, requirements, required_skills FROM job WHERE id=ANY(CAST(:jobs AS bigint[]))
+    """), {"jobs": list(job_ids)}).mappings().all()
+    catalog = catalog_for(session)
+    requirements = {job["id"]: job_skill_requirements(catalog, job) for job in jobs}
+    skills = {skill for required in requirements.values() for skill in required.values()}
+    if not skills:
+        return {}
+    versions = {row["version_id"] for row in rows if row["version_id"] and requirements.get(row["job_id"])}
+    by_version = {}
+    for version, skill in session.execute(text(f"""
+        SELECT DISTINCT rs.version_id,rs.skill_id FROM resume_skill rs
+        WHERE rs.version_id=ANY(CAST(:versions AS bigint[])) AND rs.skill_id=ANY(CAST(:skills AS bigint[]))
+          AND {_trusted('rs', 'skill.name')}
+    """), {"versions": list(versions), "skills": list(skills)}):
+        by_version.setdefault(version, set()).add(skill)
+
+    result = {}
+    for row in rows:
+        required = requirements.get(row["job_id"])
+        if not required or row["version_id"] is None:
+            continue
+        matched = by_version.get(row["version_id"], set())
+        hits = sum(skill in matched for skill in required.values())
+        result[row["id"]] = {
+            "match_percent": round(100 * hits / len(required)),
+            "match_skills": [{"name": name, "matched": skill in matched} for name, skill in required.items()]
+            if include_skills else [],
+        }
+    return result
+
+
+def cards(session, auth, request, *, show_match=False, card_matches=False, talent_pool=False, talent_status=None):
     session.execute(text("SET LOCAL jit=off"))
     policy = session.execute(text("SELECT policy_version FROM search_state WHERE singleton")).scalar_one()
     allowed = set(session.execute(text("""
@@ -112,6 +148,7 @@ def cards(session, auth, request, *, show_match=False):
         "experience": {"under1","1to3","3to5","5plus"},
         "school": set(SCHOOL_FILTERS), "domain": set(DOMAINS),
         "salary": {"under5","5to10","10to20","20to50","50plus","unknown"},
+        "capability": set(session.execute(text("SELECT code FROM capability_group")).scalars()),
     }
     groups_selected = []
     for category, values in request.facets.items():
@@ -198,18 +235,22 @@ def cards(session, auth, request, *, show_match=False):
                    AND a.handling_department_id=ANY(CAST(:deps AS bigint[]))))
         """), {"job":job_id,"deps":auth.departments}).mappings().one_or_none()
         if job:
-            catalog = catalog_for(session)
-            reference = "、".join(job["required_skills"]) or " ".join((job["requirements"],job["jd"] or ""))
-            required = recognize_job_skills(catalog, reference)[:20]
+            required = job_skill_requirements(catalog_for(session), job)
             requirement_count = len(required)
             if required:
-                params["ranking_skills"] = [catalog[key][0] for key in required]
+                params["ranking_skills"] = list(required.values())
                 rank = f"""CASE WHEN a.active_version_id IS NOT NULL THEN (
                     SELECT count(DISTINCT rs.skill_id) FROM resume_skill rs
                     WHERE rs.version_id=a.active_version_id AND rs.skill_id=ANY(CAST(:ranking_skills AS bigint[]))
                         AND {_trusted("rs","skill.name")}
                 ) END"""
-    sort = "evidence_order DESC NULLS LAST,id DESC" if rank != "NULL::bigint" else "id DESC"
+    sort = ("evidence_order DESC NULLS LAST,id DESC" if rank != "NULL::bigint" else "id DESC")
+    # 人才库置顶：已入人才库的候选人优先展示，其余按原有排序
+    sort = "in_talent DESC NULLS LAST, " + sort
+    talent_join = ("JOIN talent t ON t.source_application_id=a.id" if talent_pool
+                   else "LEFT JOIN talent t ON t.candidate_id=a.candidate_id")
+    if talent_pool:
+        sort = "talent_updated_at DESC,id DESC"
 
     metadata = f"""
       SELECT a.*, {field("profile.name", "p.name")} AS name,
@@ -297,10 +338,13 @@ def cards(session, auth, request, *, show_match=False):
             params["round_id"] = int(round_id)
             stage_filter += " AND a.interview_round_id=:round_id"
     scoped = f"""
-        SELECT a.id,a.active_version_id AS version_id,a.job_id,j.title AS job_title,a.status,a.submitted_at,
+        SELECT a.id,a.candidate_id,a.active_version_id AS version_id,a.job_id,coalesce(j.title,'简历库') AS job_title,a.status,a.submitted_at,
                a.pending_version_id,v.status AS parse_status,a.workflow_version,a.recruitment_stage,a.interview_round_id,
-               ir.name AS interview_round_name, recent.body AS latest_note, {rank} AS evidence_order
-        FROM application a JOIN job j ON j.id=a.job_id
+               ir.name AS interview_round_name, recent.body AS latest_note, {rank} AS evidence_order,
+               t.id IS NOT NULL AS in_talent,t.id AS talent_id,t.status AS talent_status,
+               t.status_label AS talent_status_label,t.updated_at AS talent_updated_at
+        FROM application a LEFT JOIN job j ON j.id=a.job_id
+        {talent_join}
         LEFT JOIN job_interview_round ir ON ir.id=a.interview_round_id
         LEFT JOIN resume_version v ON v.id=coalesce(a.pending_version_id,a.active_version_id,a.submitted_version_id)
         LEFT JOIN LATERAL (SELECT body FROM application_followup n WHERE n.application_id=a.id ORDER BY id DESC LIMIT 1) recent ON true
@@ -332,18 +376,29 @@ def cards(session, auth, request, *, show_match=False):
         sql += f""", conditions AS (
             SELECT a.*,p.name,p.target_role,{projection}
             FROM scoped a LEFT JOIN resume_profile p ON p.version_id=a.version_id
-        ), matched AS (
-            SELECT q.id,q.version_id,q.job_id,q.job_title,q.status,q.submitted_at,q.pending_version_id,q.parse_status,
-                   q.workflow_version,q.recruitment_stage,q.interview_round_id,q.interview_round_name,q.latest_note,q.evidence_order
+        ),         matched AS (
+            SELECT q.id,q.candidate_id,q.version_id,q.job_id,q.job_title,q.status,q.submitted_at,q.pending_version_id,q.parse_status,
+                   q.workflow_version,q.recruitment_stage,q.interview_round_id,q.interview_round_name,q.latest_note,q.evidence_order,
+                   q.in_talent,q.talent_id,q.talent_status,q.talent_status_label,q.talent_updated_at
             FROM conditions q WHERE {" AND ".join(where)}
         )"""
         source = "matched"
-    sql += f", slice AS (SELECT *,count(*) OVER() AS total FROM {source} ORDER BY {sort} LIMIT :size OFFSET :offset)"
+    counts = {}
+    status_filter = ""
+    if talent_pool:
+        counts = dict(session.execute(text(sql + f" SELECT talent_status,count(*) FROM {source} GROUP BY talent_status"), params).all())
+        if talent_status:
+            status_filter = "WHERE talent_status=:talent_status"
+            params["talent_status"] = talent_status
+    sql += f", slice AS (SELECT *,count(*) OVER() AS total FROM {source} {status_filter} ORDER BY {sort} LIMIT :size OFFSET :offset)"
     sql += metadata.replace("{source}","slice") + " ORDER BY " + sort
     rows = session.execute(text(sql), params).mappings().all()
     total = rows[0]["total"] if rows else 0
-    if not rows and request.page > 1:
+    if talent_pool:
+        total = counts.get(talent_status, 0) if talent_status else sum(counts.values())
+    elif not rows and request.page > 1:
         total = cards(session, auth, request.model_copy(update={"page": 1, "size": 1}))["total"]
+    matches = _card_matches(session, rows, preview("skill.name")) if card_matches and ("skill.name", "filter") in allowed else {}
     response = []
     for row in rows:
         item = dict(row)
@@ -351,6 +406,8 @@ def cards(session, auth, request, *, show_match=False):
         hits = item.pop("evidence_order", None)
         if show_match:
             item["match_percent"] = round(100 * hits / requirement_count) if hits is not None and requirement_count else None
+        if card_matches:
+            item.update(matches.get(item["id"], {"match_percent": None, "match_skills": []}))
         item["stage"] = stage(item.pop("recruitment_stage"), item.pop("interview_round_id"), item.pop("interview_round_name"))
         item["page_count"] = item["page_count"] or int(item["legacy_preview"])
         item["tags"] = []
@@ -379,6 +436,7 @@ def cards(session, auth, request, *, show_match=False):
                                  "filterable":("work.period","filter") in allowed})
         response.append(item)
     return {**({"matched_requirements":requirement_count} if show_match else {}),
+            **({"counts": counts} if talent_pool else {}),
             "items":response,"total":total,"page":request.page,"size":request.size,
             "available_facets":[category for category in facet_options if (field_map[category],"filter") in allowed],
             "school_filters": ("education.school_tags", "filter") in allowed}

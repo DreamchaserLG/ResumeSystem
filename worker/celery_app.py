@@ -2,6 +2,8 @@
 import os
 
 from celery import Celery
+from celery.schedules import crontab
+from app.core.config import get_settings
 
 BROKER = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6380/1")
 BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6380/2")
@@ -20,5 +22,14 @@ celery_app.conf.update(
     task_soft_time_limit=840,
 )
 
+settings = get_settings()
+if settings.resume_drop_dir:
+    celery_app.conf.beat_schedule = {
+        "resume-library-daily": {
+            "task": "worker.scan_resume_dropdir",
+            "schedule": crontab(hour=settings.resume_drop_hour, minute=0),
+        }
+    }
+
 # 导入任务模块，保证任务注册
-from worker.tasks import attachment, job_import, parse, ping  # noqa: E402,F401
+from worker.tasks import attachment, job_import, parse, ping, scan_dropdir  # noqa: E402,F401

@@ -21,7 +21,7 @@ from app.core.workflow import (application_lock, audit, cleanup_files, corrected
 router = APIRouter(prefix="/hr", tags=["HR"])
 SAFE_HEADERS = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
 BASE = f"""
-    SELECT a.id,a.candidate_id,a.job_id,j.title AS job_title,a.status,a.handling_department_id,
+    SELECT a.id,a.candidate_id,a.job_id,coalesce(j.title,'简历库') AS job_title,a.status,a.handling_department_id,
            a.submitted_job_id,a.recruitment_stage,a.interview_round_id,a.workflow_version,ir.name AS interview_round_name,
            a.active_version_id,a.pending_version_id,a.submitted_at,
            v.status AS parse_status,v.extractor_version,v.fail_reason,
@@ -29,7 +29,7 @@ BASE = f"""
            (SELECT p.name FROM resume_profile p JOIN field_usage_policy f ON f.field_key='profile.name'
               AND f.policy_version=st.policy_version AND f.purpose='preview' AND f.allowed
               WHERE p.version_id=a.active_version_id LIMIT 1) AS name
-    FROM application a JOIN job j ON j.id=a.job_id CROSS JOIN search_state st
+    FROM application a LEFT JOIN job j ON j.id=a.job_id CROSS JOIN search_state st
     LEFT JOIN job_interview_round ir ON ir.id=a.interview_round_id
     LEFT JOIN resume_version v ON v.id=coalesce(a.pending_version_id,a.active_version_id,a.submitted_version_id)
     WHERE {VISIBLE} AND st.singleton
@@ -103,7 +103,11 @@ def options(auth: AuthContext = Depends(require_recruitment_access)):
         tags = s.execute(text("""
             SELECT job_id,tag_code FROM job_school_filter ORDER BY job_id,tag_code
         """)).mappings().all()
-    return {"departments": [dict(x) for x in departments], "hr_department_ids": auth.departments, "skills": skills, "school_tags": [dict(x) for x in tags]}
+        capabilities = s.execute(text("""
+            SELECT code,name FROM capability_group ORDER BY display_order,code
+        """)).mappings().all()
+    return {"departments": [dict(x) for x in departments], "hr_department_ids": auth.departments, "skills": skills,
+            "school_tags": [dict(x) for x in tags], "capabilities": [dict(x) for x in capabilities]}
 
 
 @router.get("/applications")
@@ -152,19 +156,23 @@ def detail(application_id: int, include_evidence: bool = True, auth: AuthContext
             ORDER BY x.record_no
         """), {"v":version}).mappings()] if version and include_evidence else []
         education = education_summary(s, version, policy)
-        rounds = rounds_for(s, app["job_id"])
+        rounds = rounds_for(s, app["job_id"]) if app["job_id"] is not None else []
         current = stage(app["recruitment_stage"], app["interview_round_id"], app["interview_round_name"])
-        preview = s.execute(text("""
-            SELECT preview_key IS NOT NULL FROM resume_version WHERE id=:v
-        """), {"v": version}).scalar_one_or_none()
+        document = s.execute(text("""
+            SELECT v.preview_key IS NOT NULL AS has_preview, d.mime_type
+            FROM resume_version v JOIN resume_document d ON d.id=v.document_id WHERE v.id=:v
+        """), {"v": version}).mappings().one_or_none()
         audit(s, auth.user_id, "view_resume_detail", application_id, {"version_id": version})
-    return {**app, "evidence": fields, "issues": issues, "reviewed_extensions":reviewed_extensions, "education": education, "stage": current, "rounds": rounds, "has_preview": bool(preview)}
+    return {**app, "evidence": fields, "issues": issues, "reviewed_extensions":reviewed_extensions,
+            "education": education, "stage": current, "rounds": rounds,
+            "has_preview": bool(document and document["has_preview"]),
+            "original_mime_type": document["mime_type"] if document else None}
 
 
 @router.post("/resume-cards/search")
 def resume_cards(body: CardQuery, auth: AuthContext = Depends(require_recruitment_access)):
     with _scope(auth) as session:
-        return cards(session, auth, body)
+        return cards(session, auth, body, card_matches=True)
 
 
 def _rendered_image(session, key):
@@ -211,32 +219,55 @@ def avatar(application_id: int, version: int | None = Query(None, gt=0), auth: A
             SELECT v.avatar_key FROM resume_version v CROSS JOIN search_state st
             JOIN field_usage_policy p ON p.policy_version=st.policy_version
               AND p.field_key='profile.avatar' AND p.purpose='preview' AND p.allowed
+            JOIN field_definition f ON f.field_key=p.field_key AND f.status='active'
             WHERE v.id=:v AND st.singleton
         """), {"v": current}).scalar_one_or_none()
         return _rendered_image(s, key)
 
 
 @router.get("/applications/{application_id}/original")
-def original(application_id: int, auth: AuthContext = Depends(require_auth)):
+def original(application_id: int, inline: bool = False, version: int | None = Query(None, gt=0),
+             auth: AuthContext = Depends(require_auth)):
     with owner_engine.begin() as connection:
-        if auth.role == "dept_hr":
+        if auth.role == "dept_hr" or inline:
             application_lock(connection, application_id, auth)
-        grant = connection.execute(text("""
-            SELECT a.active_version_id,d.object_key,d.mime_type
+        params = {"a": application_id, "u": auth.user_id}
+        document = connection.execute(text("""
+            SELECT a.active_version_id,d.object_key,d.mime_type,
+                   v.document_id=submitted.document_id AND EXISTS (
+                     SELECT 1 FROM audit_log log WHERE log.actor_id=:u AND log.action='resume_import'
+                       AND log.target_type='application' AND log.target_id=CAST(a.id AS text)
+                   ) AS uploaded_by_viewer
             FROM application a JOIN resume_version v ON v.id=coalesce(a.active_version_id,a.submitted_version_id)
+            JOIN resume_version submitted ON submitted.id=a.submitted_version_id
             JOIN resume_document d ON d.id=v.document_id
-            JOIN resume_original_grant g ON g.application_id=a.id AND g.user_id=:u
-            WHERE a.id=:a AND a.deleted_at IS NULL AND g.expires_at>now() FOR UPDATE OF g
-        """), {"a": application_id, "u": auth.user_id}).mappings().one_or_none()
-        if grant is None:
+            WHERE a.id=:a AND a.deleted_at IS NULL
+        """), params).mappings().one_or_none()
+        if document is None:
             raise HTTPException(404, "原件不可访问或授权已过期")
+        # Viewers can reopen the file they supplied while the application is still in scope.
+        # Opening another user's raw file and downloading still require a one-use grant.
+        uses_grant = not (inline and document["uploaded_by_viewer"])
+        if uses_grant and connection.execute(text("""
+            SELECT 1 FROM resume_original_grant WHERE application_id=:a AND user_id=:u
+              AND expires_at>now() FOR UPDATE
+        """), params).first() is None:
+            raise HTTPException(404, "原件不可访问或授权已过期")
+        if version is not None and document["active_version_id"] != version:
+            raise HTTPException(409, "简历版本已更新，请刷新")
+        if inline and document["mime_type"] != "application/pdf":
+            raise HTTPException(415, "仅支持直接预览 PDF 原件")
         try:
-            path = open_file(grant["object_key"])
+            path = open_file(document["object_key"])
         except FileNotFoundError as exc:
             raise HTTPException(404, "原件不可用") from exc
-        connection.execute(text("DELETE FROM resume_original_grant WHERE application_id=:a AND user_id=:u"),
-                           {"a": application_id, "u": auth.user_id})
-        audit(connection, auth.user_id, "download_original", application_id, {"version_id": grant["active_version_id"]})
+        if uses_grant:
+            connection.execute(text("DELETE FROM resume_original_grant WHERE application_id=:a AND user_id=:u"), params)
+        action = "view_original_pdf" if inline else "download_original"
+        audit(connection, auth.user_id, action, application_id, {"version_id": document["active_version_id"]})
+    if inline:
+        return FileResponse(path, media_type="application/pdf", filename=f"resume-{application_id}.pdf",
+                            content_disposition_type="inline", headers=SAFE_HEADERS)
     return FileResponse(path, media_type="application/octet-stream", filename=f"resume-{application_id}." + path.rsplit(".", 1)[-1],
                         headers=SAFE_HEADERS)
 

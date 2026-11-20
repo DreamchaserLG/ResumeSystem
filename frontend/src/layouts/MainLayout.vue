@@ -8,10 +8,10 @@ import {
   NLayoutContent,
 } from 'naive-ui'
 import {
-  BarChartOutline,
-  DocumentsOutline,
   BriefcaseOutline,
+  DocumentsOutline,
   PeopleOutline,
+  GitNetworkOutline,
 } from '@vicons/ionicons5'
 import ProfileMenu from '@/components/ProfileMenu.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -53,7 +53,7 @@ const menuItems = computed(()=>[
   ...(auth.isSuperAdmin?[{label:'用户管理',key:'users',icon:PeopleOutline}]:[]),
   { label: '岗位管理', key: 'jobs', icon: BriefcaseOutline },
   { label: '简历管理', key: 'applications', icon: DocumentsOutline },
-  { label: 'AI 分析', key: 'analysis', icon: BarChartOutline },
+  { label: '人才管理', key: 'talent', icon: GitNetworkOutline },
 ])
 const activeMenu = computed(() => route.name === 'job-candidates' ? 'jobs' : route.name === 'application-detail' ? 'applications' : route.name)
 /* 收起状态点侧边栏任意位置都展开，接近 GPT 的操作手感。 */

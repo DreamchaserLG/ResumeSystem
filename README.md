@@ -12,6 +12,8 @@ docker compose ps
 
 前端：<http://127.0.0.1:5173>。API：<http://127.0.0.1:8001/api/docs>。Compose 先运行 SQL 迁移，再启动 API、worker 和前端。现有部署可在备份后使用原数据库和私有存储启动；旧解析记录可在简历管理的更多操作中重新解析，发布后即可使用字段筛选。
 
+AI 分析的思考流可在服务端离线英译中：首次部署运行 `python scripts/setup_reasoning_translation.py` 下载并校验约 68 MB 的英译中模型，再重建 API 容器。模型文件只保存在本机 `models/translation/en_zh`，运行时由只读卷加载；前端通过 SSE 接收逐句译文。未安装模型时，界面显示中文提示，不展示未翻译的英文思考。
+
 本地演示账号：部门 HR 为 `hr.tech@company.internal`（`hr123456`），超管为 `admin@company.internal`（`admin123`）。接入公司数据前，更换示例密码与数据库凭据、禁用示例账号，并将接口部署在公司内网。worker 运行用户需对 storage 有写权限；OCR 模型可预置在 worker 的 `/home/resume/.paddlex`（离线部署先准备模型权重）。
 
 会话按浏览器标签页保存。刷新时向服务端验证会话，再重新加载当前页面；独立新开的标签页需要登录，可以使用另一个账号。右上角个人资料提供「在新标签页登录其他账号」。浏览器仍可自动填充账号和密码。同一账号的其他登录仍需要确认接管。

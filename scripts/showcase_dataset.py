@@ -260,7 +260,7 @@ def dump(owner) -> Path:
         tables = [row[0] for row in conn.execute("""
             SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
             WHERE n.nspname='public' AND c.relkind='r' AND NOT c.relispartition
-              AND c.relname NOT LIKE 'pg_%' ORDER BY c.relname
+              AND c.relname NOT LIKE 'pg_%' AND c.relname<>'schema_migrations' ORDER BY c.relname
         """)]
         columns = {}
         for table in tables:
@@ -314,10 +314,11 @@ def load_snapshot(conn, path: Path) -> None:
             end = payload.find(b"\n\\.\n", newline)
             if end < 0:
                 raise SystemExit("快照的 COPY 数据段缺少结束标记，文件可能损坏")
-            with conn.cursor() as cursor, cursor.copy(line.decode("utf-8")) as copy:
-                copy.write(payload[newline + 1:end + 1] if end > newline else b"")
+            if not line.startswith(b'COPY public."schema_migrations" '):
+                with conn.cursor() as cursor, cursor.copy(line.decode("utf-8")) as copy:
+                    copy.write(payload[newline + 1:end + 1] if end > newline else b"")
+                copies += 1
             position = end + 4
-            copies += 1
             continue
         statement = bytearray(line)
         position = newline + 1
@@ -327,7 +328,10 @@ def load_snapshot(conn, path: Path) -> None:
                 break
             statement += b"\n" + payload[position:following]
             position = following + 1
-        conn.execute(statement.decode("utf-8"))
+        sql = statement.decode("utf-8")
+        if sql.startswith("TRUNCATE "):
+            sql = sql.replace(',public."schema_migrations"', '')
+        conn.execute(sql)
     print(f"loaded {copies} COPY blocks from {path.name}", flush=True)
 
 

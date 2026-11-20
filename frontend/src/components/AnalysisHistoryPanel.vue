@@ -1,15 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { AddOutline, ArchiveOutline, CreateOutline, EllipsisHorizontalOutline, PinOutline, SearchOutline, TrashOutline, ArrowUndoOutline } from '@vicons/ionicons5'
+import { AddOutline, ArchiveOutline, ChevronBackOutline, ChevronForwardOutline, CreateOutline, EllipsisHorizontalOutline, PinOutline, TrashOutline, ArrowUndoOutline, SearchOutline } from '@vicons/ionicons5'
 import { useAnalysisHistory, type AnalysisHistoryItem } from '@/stores/analysisHistory'
 
-const props=defineProps<{currentId?:string}>()
-const emit=defineEmits<{newChat:[]}>()
+const props=defineProps<{currentId?:string; collapsed:boolean; mobileOpen:boolean}>()
+const emit=defineEmits<{newChat:[]; toggle:[]}>()
 const router=useRouter()
 const history=useAnalysisHistory()
 const search=ref('')
-const searchInput=ref<HTMLInputElement>()
 const menuId=ref('')
 const renamingId=ref('')
 const renameDraft=ref('')
@@ -69,16 +68,20 @@ function remove(id:string) {
 </script>
 
 <template>
-  <aside class="analysis-history" aria-label="AI 分析历史对话">
+  <aside class="analysis-history" :class="{compact:collapsed}" aria-label="AI 分析历史对话">
     <header class="history-head">
       <div class="history-brand"><span class="brand-spark">✦</span><strong>AI 分析</strong></div>
-      <button type="button" class="history-icon" title="搜索对话" aria-label="搜索对话" @click="searchInput?.focus()"><SearchOutline aria-hidden="true"/></button>
+      <button type="button" class="history-icon" :title="mobileOpen?'关闭历史对话':collapsed?'展开历史对话':'折叠历史对话'"
+        :aria-label="mobileOpen?'关闭历史对话':collapsed?'展开历史对话':'折叠历史对话'"
+        :aria-expanded="mobileOpen || !collapsed" aria-controls="analysis-history-content" @click="emit('toggle')">
+        <ChevronForwardOutline v-if="collapsed && !mobileOpen" aria-hidden="true"/><ChevronBackOutline v-else aria-hidden="true"/>
+      </button>
     </header>
-    <button type="button" class="new-conversation" @click="newChat"><AddOutline aria-hidden="true"/>开启新对话</button>
+    <button type="button" class="new-conversation" title="开启新对话" aria-label="开启新对话" @click="newChat"><AddOutline aria-hidden="true"/><span>开启新对话</span></button>
     <label class="history-search"><SearchOutline aria-hidden="true"/>
-      <input ref="searchInput" v-model="search" type="search" placeholder="搜索对话标题" aria-label="搜索历史对话">
+      <input v-model="search" type="search" placeholder="搜索对话标题" aria-label="搜索历史对话">
     </label>
-    <div class="history-scroll">
+    <div id="analysis-history-content" class="history-scroll">
       <p v-if="!groups.length" class="history-empty">{{ search?'没有匹配的对话':'暂无历史对话' }}</p>
       <section v-for="group in groups" :key="group.label" class="history-group">
         <h2>{{ group.label }}</h2>
@@ -120,5 +123,11 @@ function remove(id:string) {
 .history-icon{display:grid;place-items:center;width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:#7e9196;cursor:pointer}.history-icon svg{width:17px;height:17px}.history-icon:hover{background:#e6f0ee;color:#087f73}
 .new-conversation{display:flex;align-items:center;justify-content:center;gap:7px;margin:0 12px;padding:10px;border:1px solid #e4ebec;border-radius:24px;background:#fff;color:#29434a;box-shadow:0 2px 6px rgba(26,66,71,.05);font:inherit;font-size:13px;cursor:pointer}.new-conversation:hover{border-color:#9bcfc6;color:#087e72}.new-conversation svg{width:15px;height:15px}
 .history-search{display:flex;align-items:center;gap:7px;margin:0 12px;padding:6px 10px;border:1px solid transparent;border-radius:8px;color:#8da0a3}.history-search:focus-within{border-color:#cae2dd;background:#fff}.history-search svg{width:13px;height:13px;flex:none}.history-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:#334f57;font:inherit;font-size:11.5px}.history-search input::placeholder{color:#9aa9ac}
+@media(min-width:761px){
+  .compact{grid-template-rows:auto auto;align-content:start;justify-items:center}
+  .compact .history-head{padding:14px 0 2px}
+  .compact .history-brand,.compact .history-search,.compact .history-scroll,.compact .new-conversation span{display:none}
+  .compact .new-conversation{margin:0;padding:8px}
+}
 .history-scroll{min-height:0;overflow:auto;padding:0 9px 24px;scrollbar-width:thin}.history-group{margin-top:17px}.history-group h2{padding:0 11px 7px;color:#8b9b9e;font-size:11px;font-weight:600}.history-row{position:relative;display:flex;align-items:center;border-radius:9px;min-width:0}.history-row:hover{background:#edf3f3}.history-row.selected{background:#e2f1ee;color:#087c70}.history-item{display:flex;align-items:center;gap:5px;min-width:0;flex:1;padding:9px 9px 9px 11px;border:0;background:transparent;color:inherit;text-align:left;font:inherit;font-size:12.5px;cursor:pointer}.history-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-item svg{width:12px;height:12px;flex:none}.history-more{display:grid;place-items:center;width:27px;height:27px;flex:none;margin-right:3px;border:0;border-radius:6px;background:transparent;color:#839a9b;opacity:0;cursor:pointer}.history-row:hover .history-more,.history-row.selected .history-more,.history-more:focus-visible{opacity:1}.history-more svg{width:16px;height:16px}.history-menu{position:absolute;z-index:8;top:31px;right:2px;display:grid;min-width:126px;padding:4px;border:1px solid #dce7e6;border-radius:9px;background:white;box-shadow:0 12px 30px rgba(20,54,60,.15)}.history-menu button{display:flex;align-items:center;gap:8px;padding:7px 8px;border:0;border-radius:5px;background:transparent;color:#40595e;text-align:left;font:inherit;font-size:11.5px;cursor:pointer}.history-menu button:hover{background:#f0f7f5}.history-menu button.danger{color:#b54751}.history-menu svg{width:14px;height:14px}.history-rename{width:100%;padding:7px 8px;border:1px solid #a7d2ca;border-radius:6px;outline:0;font:inherit;font-size:12px}.history-empty{padding:16px 12px;color:#98a8aa;font-size:12px}.archived-group{padding-top:11px;border-top:1px solid #e4ebec}
 </style>

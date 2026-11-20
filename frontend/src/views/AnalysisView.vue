@@ -15,6 +15,11 @@ const router=useRouter()
 const auth=useAuthStore()
 const history=useAnalysisHistory()
 const mobileHistoryOpen=ref(false)
+const historyCollapsed=ref(false)
+function toggleHistory() {
+  if (mobileHistoryOpen.value) mobileHistoryOpen.value=false
+  else historyCollapsed.value=!historyCollapsed.value
+}
 const directory=ref<JobDirectory>({items:[],departments:[],companies:[]})
 const question=ref('')
 const department=ref<number>()
@@ -408,9 +413,10 @@ function download() {
 </script>
 
 <template>
-  <main class="hire-page analysis-page" aria-label="AI 招聘分析">
+  <main class="hire-page analysis-page" :class="{'history-collapsed':historyCollapsed}" aria-label="AI 招聘分析">
     <AnalysisHistoryPanel :current-id="currentHistoryId" :class="{'mobile-open':mobileHistoryOpen}"
-      @new-chat="resetChat();mobileHistoryOpen=false"/>
+      :collapsed="historyCollapsed" :mobile-open="mobileHistoryOpen"
+      @toggle="toggleHistory" @new-chat="resetChat();mobileHistoryOpen=false"/>
     <button v-if="mobileHistoryOpen" type="button" class="history-scrim" aria-label="关闭历史对话" @click="mobileHistoryOpen=false"></button>
     <section class="analysis-conversation" aria-label="当前对话">
     <button v-if="!entries.length" type="button" class="mobile-history-toggle empty-toggle" @click="mobileHistoryOpen=!mobileHistoryOpen">历史对话</button>
@@ -641,6 +647,7 @@ function download() {
 
 <style scoped>
 .analysis-page{padding:0;height:100%;min-height:0;display:grid;grid-template-columns:252px minmax(0,1fr);grid-template-rows:minmax(0,1fr);background:#fff}
+@media(min-width:761px){.analysis-page.history-collapsed{grid-template-columns:52px minmax(0,1fr)}}
 .analysis-conversation{position:relative;min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
 .mobile-history-toggle{display:none}
 .history-scrim{display:none}

@@ -20,7 +20,8 @@ async function request<T>(path: string, init?: RequestInit, redirectOnUnauthoriz
   if (token) headers['X-Session-Token'] = token
 
   const resp = await fetch(BASE + path, { cache:'no-store', ...init, headers })
-  if (resp.ok && resp.headers.get('Content-Type')?.startsWith('image/')) return await resp.blob() as T
+  const contentType=resp.headers.get('Content-Type') || ''
+  if (resp.ok && (contentType.startsWith('image/') || contentType.startsWith('application/pdf'))) return await resp.blob() as T
   const body = await resp.json().catch(() => ({}))
   const detail = body.detail
   if (resp.status === 401 && redirectOnUnauthorized) expireSession(token,detail)
@@ -56,5 +57,7 @@ export const api = {
     request<T>(path, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
   put: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: 'PUT', body: data ? JSON.stringify(data) : undefined }),
+  patch: <T>(path: string, data?: unknown) =>
+    request<T>(path, { method: 'PATCH', body: data ? JSON.stringify(data) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 }

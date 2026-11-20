@@ -9,6 +9,8 @@ pydantic-settings==2.12.0
 python-multipart==0.0.20
 pytest==8.4.2
 httpx==0.28.1
+ctranslate2==4.9.0
+sentencepiece==0.2.3
 
 pillow==12.0.0
 

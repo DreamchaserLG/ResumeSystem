@@ -1,26 +1,44 @@
 <script lang="ts">
-type Facet = 'degree' | 'school' | 'domain' | 'job' | 'followup'
+type Facet = 'degree' | 'school' | 'domain' | 'capability'
 type Bounds = [number | null, number | null]
 export type FilterSelection = Partial<Record<Facet, string[]>> & {
+  department?: number
+  jobs?: string[]
   salaryRange?: Bounds
   experienceRange?: Bounds
+}
+export function filterSize(filters:FilterSelection) {
+  return (filters.jobs?.length ?? 0) + Number(Boolean(filters.department))
+    + Number(Boolean(filters.salaryRange)) + Number(Boolean(filters.experienceRange))
+    + (filters.degree?.length ?? 0) + (filters.school?.length ?? 0)
+    + (filters.domain?.length ?? 0) + (filters.capability?.length ?? 0)
+}
+
+export function filterSearchBody(filters:FilterSelection) {
+  const {department,jobs,salaryRange,experienceRange,...facets}=filters
+  return {
+    department_id:department, job_ids:jobs?.map(Number) ?? [], facets,
+    salary_min:salaryRange?.[0],salary_max:salaryRange?.[1],
+    experience_min_months:experienceRange?.[0],experience_max_months:experienceRange?.[1],
+  }
 }
 </script>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElButton, ElSlider } from 'element-plus'
-import { CloseOutline } from '@vicons/ionicons5'
+import { ChevronBackOutline } from '@vicons/ionicons5'
 import type { Job } from '@/api/hr'
 
-const props = defineProps<{ selected:FilterSelection; available:string[]; jobs:Job[]; followups:string[] }>()
+const props = defineProps<{ title:string; selected:FilterSelection; available:string[]; departments:{id:number;name:string}[];
+  jobs:Job[]; requiresDepartment:boolean; capabilities:{code:string;name:string}[] }>()
 const emit = defineEmits<{ close:[]; apply:[filters:FilterSelection] }>()
 const panel = ref<HTMLElement>()
 const salaryMax = 100000
 const experienceMax = 360
 const salary = ref<[number, number]>([props.selected.salaryRange?.[0] ?? 0, props.selected.salaryRange?.[1] ?? salaryMax])
 const experience = ref<[number, number]>([props.selected.experienceRange?.[0] ?? 0, props.selected.experienceRange?.[1] ?? experienceMax])
-const facets: Facet[] = ['degree', 'school', 'domain', 'job', 'followup']
+const facets: Facet[] = ['degree', 'school', 'domain', 'capability']
 const draft = ref<Partial<Record<Facet, string[]>>>(
   Object.fromEntries(facets.map(key => [key, [...(props.selected[key] ?? [])]])),
 )
@@ -37,41 +55,29 @@ const schools = computed(() => props.available.includes('school') ? choices('sch
 ]) : [])
 const groups = computed(() => [
   { key:'school', title:'学校级别', options:schools.value },
-  { key:'followup', title:'当前状态', options:choices('followup', [
-    ['recorded','有跟进记录'], ['unrecorded','暂无跟进记录'], ...props.followups.map((body):[string,string] => ['note:'+body,body]),
-  ]) },
   { key:'domain', title:'经历方向', options:props.available.includes('domain') ? choices('domain', [
     ['technology','技术'], ['finance','金融'], ['legal','法律'], ['consumer','生活服务'],
     ['human_resources','人力资源'], ['healthcare','医疗'], ['biomed','生物医药'],
   ]) : [] },
-  { key:'job', title:'部门 / 岗位', options:choices('job', jobChoices.value) },
-].filter(group=>group.options.length || group.key==='job'))
-const departments = computed(() => {
-  const map = new Map<number, string>()
-  for (const job of props.jobs) map.set(job.department_id, job.department_name || '部门 #' + job.department_id)
-  return [...map].map(([id, name]) => ({ id:String(id), name }))
-})
-const draftDepartment = ref<string>()
-const jobChoices = computed(() => props.jobs
-  .filter(job => !draftDepartment.value || String(job.department_id) === draftDepartment.value)
-  .map(job => [String(job.id), job.title] as [string, string]))
-function toggleDepartment(id:string) {
-  draftDepartment.value = draftDepartment.value === id ? undefined : id
-  const allowed = new Set(jobChoices.value.map(([value]) => value))
-  draft.value.job = (draft.value.job ?? []).filter(value => allowed.has(value))
+  { key:'capability', title:'能力标签', options:props.available.includes('capability') ? choices('capability',
+    props.capabilities.map((cap):[string,string] => [cap.code, cap.name])
+  ) : [] },
+].filter(group=>group.options.length))
+const draftDepartment = ref(props.selected.department)
+const draftJobs = ref([...(props.selected.jobs ?? [])])
+const jobChoices = computed(()=>props.jobs.filter(job=>!props.requiresDepartment || job.department_id===draftDepartment.value))
+function selectDepartment(department?:number) {
+  draftDepartment.value=department
+  draftJobs.value=[]
 }
-
+function toggleJob(id:number) {
+  const value=String(id)
+  if(draftJobs.value.includes(value)) draftJobs.value=draftJobs.value.filter(item=>item!==value)
+  else if(draftJobs.value.length<100) draftJobs.value.push(value)
+}
 function toggle({facet,value}:Choice) {
   const selected = draft.value[facet] ?? []
-  if (selected.includes(value)) {
-    draft.value[facet] = selected.filter(item => item !== value)
-  } else if (facet === 'followup') {
-    const notes = selected.filter(item => item.startsWith('note:'))
-    draft.value.followup = value.startsWith('note:') ? [...notes, value].slice(-30) : [value]
-  } else {
-    const limit = facet === 'job' ? 100 : Infinity
-    if (selected.length < limit) draft.value[facet] = [...selected, value]
-  }
+  draft.value[facet] = selected.includes(value) ? selected.filter(item=>item!==value) : [...selected,value]
 }
 
 function bounds([min,max]:[number,number], ceiling:number): Bounds | undefined {
@@ -97,7 +103,7 @@ function rangeText(range:[number,number], ceiling:number, format:(n:number)=>str
 }
 function clear() {
   draft.value = {}
-  draftDepartment.value = undefined
+  selectDepartment()
   salary.value = [0, salaryMax]
   experience.value = [0, experienceMax]
 }
@@ -105,21 +111,39 @@ function apply() {
   const filters: FilterSelection = Object.fromEntries(Object.entries(draft.value).filter(([,values]) => values.length))
   if (props.available.includes('salary')) filters.salaryRange = bounds(salary.value, salaryMax)
   if (props.available.includes('experience')) filters.experienceRange = bounds(experience.value, experienceMax)
-  const jobs = draft.value.job?.length ? draft.value.job
-    : draftDepartment.value ? props.jobs.filter(job => String(job.department_id) === draftDepartment.value).map(job => String(job.id)) : []
-  if (jobs.length) filters.job = jobs
+  if (props.departments.length && draftDepartment.value) filters.department=draftDepartment.value
+  const jobs=jobChoices.value.map(job=>String(job.id))
+  const selectedJobs=draftJobs.value.filter(job=>jobs.includes(job))
+  if(selectedJobs.length) filters.jobs=selectedJobs
   emit('apply', filters)
 }
 onMounted(() => panel.value?.focus({ preventScroll:true }))
 </script>
 
 <template>
-  <section id="candidate-filter-panel" ref="panel" class="local-filters" aria-labelledby="candidate-filter-title" tabindex="-1"
-    @keydown.esc.stop="emit('close')">
-    <header class="filter-title"><h2 id="candidate-filter-title">筛选</h2>
-      <button type="button" aria-label="关闭筛选" @click="emit('close')"><CloseOutline aria-hidden="true"/></button>
+  <section ref="panel" class="local-filters" role="dialog" :aria-label="title" tabindex="-1" @keydown.esc.stop="emit('close')">
+    <header class="filter-title"><button type="button" aria-label="关闭筛选" @click="emit('close')"><ChevronBackOutline aria-hidden="true"/></button>
+      <h2>{{ title }}</h2>
     </header>
     <div class="filter-options">
+      <section v-if="departments.length" class="filter-group" aria-labelledby="filter-department">
+        <header class="group-heading"><h3 id="filter-department">部门</h3>
+          <button type="button" :aria-pressed="!draftDepartment" @click="selectDepartment()">全部</button></header>
+        <div class="filter-choices wide-choices">
+          <button v-for="dept in departments" :key="dept.id" type="button" class="facet-choice"
+            :aria-pressed="draftDepartment===dept.id" @click="selectDepartment(draftDepartment===dept.id?undefined:dept.id)">{{ dept.name }}</button>
+        </div>
+      </section>
+      <section class="filter-group" aria-labelledby="filter-job">
+        <header class="group-heading"><h3 id="filter-job">岗位</h3>
+          <button type="button" :aria-pressed="!draftJobs.length" @click="draftJobs=[]">全部</button></header>
+        <p v-if="requiresDepartment && !draftDepartment" class="hire-muted">选择部门后可筛选岗位。</p>
+        <p v-else-if="!jobChoices.length" class="hire-muted">暂无可选岗位。</p>
+        <div v-else class="filter-choices wide-choices">
+          <button v-for="job in jobChoices" :key="job.id" type="button" class="facet-choice" :title="job.title"
+            :aria-pressed="draftJobs.includes(String(job.id))" @click="toggleJob(job.id)">{{ job.title }}</button>
+        </div>
+      </section>
       <section v-if="degrees.length" class="filter-group" aria-labelledby="filter-degree">
         <header class="group-heading"><h3 id="filter-degree">学历要求</h3>
           <button type="button" :aria-pressed="!draft.degree?.length" @click="draft.degree=[]">全部</button></header>
@@ -146,15 +170,9 @@ onMounted(() => panel.value?.focus({ preventScroll:true }))
       </section>
       <section v-for="group in groups" :key="group.key" class="filter-group" :aria-labelledby="'filter-'+group.key">
         <header class="group-heading"><h3 :id="'filter-'+group.key">{{ group.title }}</h3>
-          <button type="button" :aria-pressed="!draft[group.options[0]?.facet ?? 'job']?.length && !(group.key==='job' && draftDepartment)"
-            @click="group.key==='job' ? toggleDepartment(draftDepartment ?? '') : draft[group.options[0].facet]=[]">全部</button></header>
-        <p v-if="group.key==='followup'" class="group-hint">按最新跟进备注筛选</p>
-        <div v-if="group.key==='job'" class="department-row" role="group" aria-label="按部门筛选岗位">
-          <button v-for="dept in departments" :key="dept.id" type="button" class="facet-choice dept-choice"
-            :title="dept.name" :aria-pressed="draftDepartment===dept.id" @click="toggleDepartment(dept.id)">{{ dept.name }}</button>
-        </div>
-        <p v-if="group.key==='job' && draftDepartment && !group.options.length" class="group-hint">该部门暂无岗位。</p>
-        <div class="filter-choices" :class="{ 'wide-choices':group.key==='job' || group.key==='followup' }">
+          <button type="button" :aria-pressed="!draft[group.options[0].facet]?.length"
+            @click="draft[group.options[0].facet]=[]">全部</button></header>
+        <div class="filter-choices" :class="{ 'wide-choices':group.key==='capability' }">
           <button v-for="choice in group.options" :key="choice.value" type="button" class="facet-choice"
             :aria-pressed="draft[choice.facet]?.includes(choice.value) ?? false" :title="choice.label"
             @click="toggle(choice)">{{ choice.label }}</button>
@@ -172,7 +190,7 @@ onMounted(() => panel.value?.focus({ preventScroll:true }))
 .local-filters {grid-row:1 / -1;display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0;background:linear-gradient(180deg,#fff,#fcfefe)}
 .local-filters:focus {outline:0}
 .filter-title,.group-heading,.range-ends {display:flex;align-items:center;justify-content:space-between;gap:8px}
-.filter-title {padding:14px 16px;border-bottom:1px solid var(--hire-line);background:#fbfdfd}
+.filter-title {justify-content:flex-start;padding:14px 16px;border-bottom:1px solid var(--hire-line);background:#fbfdfd}
 .filter-title h2 {font-size:15px}
 .filter-title button {width:30px;height:30px;padding:6px;border:none;border-radius:7px;background:var(--rs-primary-soft);cursor:pointer;color:var(--hire-accent-dark);transition:transform var(--rs-motion-fast),background-color var(--rs-motion-fast)}
 .filter-title button:hover {background:#d7efea;transform:scale(1.04)}
@@ -183,11 +201,7 @@ onMounted(() => panel.value?.focus({ preventScroll:true }))
 .group-heading h3 {font-size:13px}
 .group-heading button {border:1px solid #e1e8eb;border-radius:5px;padding:3px 7px;background:#fff;font-size:11px;cursor:pointer;color:var(--hire-muted)}
 .group-heading button[aria-pressed=true] {border-color:#badbd4;background:#edf8f5;color:var(--hire-accent-dark)}
-.group-hint {color:var(--hire-muted);margin:-4px 0 9px;font-size:11px}
 .filter-choices {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
-.department-row {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:9px}
-.dept-choice {background:#f0f7f5;border-color:#d5e7e2;color:var(--hire-accent-dark);font-weight:600}
-.dept-choice[aria-pressed=true] {border-color:#7cb8ac;background:var(--hire-soft)}
 .wide-choices {grid-template-columns:repeat(2,minmax(0,1fr))}
 .facet-choice {cursor:pointer;min-height:33px;min-width:0;padding:4px 5px;border:1px solid #e2eaec;border-radius:7px;
   color:#344f5a;background:#f7fafb;font-size:12px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:transform var(--rs-motion-fast),border-color var(--rs-motion-fast),background-color var(--rs-motion-fast)}

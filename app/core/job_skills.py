@@ -25,3 +25,8 @@ def appears(term, document):
 def recognize_job_skills(catalog, reference):
     document = norm(reference)
     return [name for name, (_,aliases) in catalog.items() if any(appears(alias,document) for alias in aliases)]
+
+
+def job_skill_requirements(catalog, job):
+    reference = "、".join(job["required_skills"]) or " ".join((job["requirements"], job["jd"] or ""))
+    return {name: catalog[name][0] for name in recognize_job_skills(catalog, reference)[:20]}

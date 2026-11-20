@@ -23,7 +23,7 @@ export const stagesFor = (rounds: InterviewRound[] = []): Stage[] => [
 export const stageDisplay = (stage: Stage) => stage.code === 'interview' ? '推进中 · ' + stage.label : stage.label
 export const stageKey = (stage: Stage) => stage.round_id ? 'interview:' + stage.round_id : stage.code
 export interface Application {
-  id: number; job_id: number; job_title: string; name: string | null; status: string
+  id: number; job_id: number | null; job_title: string; name: string | null; status: string
   handling_department_id: number; active_version_id: number | null; pending_version_id: number | null
   parse_status: string; extractor_version: string | null; fail_reason: string | null; submitted_at: string
 }
@@ -40,12 +40,13 @@ export const schoolTagLabels: Record<string,string> = {
   is_985:'985', is_211:'211', is_double_first_class:'双一流', study_abroad:'留学', qs_top100:'QS 前 100',
 }
 export interface Detail extends Application {
+  original_mime_type?: string | null
   education: { record_no:number; school:string; degree:string | null; tags:string[]; qs_rank:number | null; qs_edition:number | null }[]
   evidence: Evidence[]; issues: Issue[]; has_preview: boolean
   reviewed_extensions: { record_no:number; raw_label:string; value:string }[]
   stage: Stage; rounds: InterviewRound[]; workflow_version: number
 }
-export interface Options { departments: Department[]; hr_department_ids: number[]; skills: string[]; school_tags: { job_id: number; tag_code: string }[] }
+export interface Options { departments: Department[]; hr_department_ids: number[]; skills: string[]; school_tags: { job_id: number; tag_code: string }[]; capabilities: { code: string; name: string }[] }
 export interface Page<T> { items: T[]; has_more: boolean }
 export interface SearchResult { items: (Pick<Application, 'id' | 'job_title' | 'name'> & { evidence: Evidence[] })[]; total: number; cached: boolean }
 export const labels: Record<string, string> = {
@@ -74,9 +75,13 @@ export interface ResumeTag {
   id: string; type: 'degree' | 'school' | 'experience' | 'domain' | 'capability' | 'language'; value: string; filterable: boolean
 }
 export interface ResumeCard {
-  id: number; version_id: number | null; job_id: number; job_title: string; name: string | null
+  id: number; version_id: number | null; job_id: number | null; job_title: string; name: string | null
+  candidate_id: number; in_talent: boolean; talent_status: string | null
   target_role: string | null; gender: string | null; city: string | null; address: string | null; phone: string | null
   status: string; stage: Stage; workflow_version: number; parse_status: string; page_count: number; has_avatar: boolean; tags: ResumeTag[]; latest_note?: string | null; salary_midpoint?: number | null; recent_company?: string | null; current_company?: string | null
+  talent_status_label?: string | null
+  match_percent?: number | null
+  match_skills?: { name:string; matched:boolean }[]
 }
 export interface ResumeCardPage { items: ResumeCard[]; total: number; page: number; size: number; school_filters: boolean; available_facets?: string[] }
 

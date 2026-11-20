@@ -8,7 +8,7 @@ import FilePickerZone from './FilePickerZone.vue'
 type State = 'ready'|'sending'|'parsing'|'published'|'failed'|'unsupported'
 type BatchItem = {key:string; file:File; path:string; state:State; message?:string; id?:number;version?:number}
 const props=defineProps<{modelValue:boolean; mode:'single'|'batch'; jobs:Job[]; preferredJob?:number}>()
-const emit=defineEmits<{ 'update:modelValue':[value:boolean]; updated:[job:number]; uploading:[value:boolean]; view:[job:number,id:number] }>()
+const emit=defineEmits<{ 'update:modelValue':[value:boolean]; updated:[job:number]; uploading:[value:boolean]; imported:[job:number,id:number] }>()
 const job=ref<number>()
 const items=ref<BatchItem[]>([])
 const active=ref(false)
@@ -80,7 +80,8 @@ async function submit() {
   active.value=false
   emit('uploading',false)
   if(!disposed) {
-    emit('updated',selected)
+    const first=queue.find(row=>row.id)
+    if(first?.id) emit('imported',selected,first.id)
     if(!poller && items.value.some(row=>row.state==='parsing')) poller=setTimeout(poll,3000)
   }
 }
@@ -105,11 +106,6 @@ async function poll() {
   }))
   if(changed && job.value && !disposed) emit('updated',job.value)
   if(!disposed && !poller && items.value.some(row=>row.state==='parsing')) poller=setTimeout(poll,4200)
-}
-function view(row:BatchItem) {
-  if(!row.id || !job.value) return
-  emit('update:modelValue',false)
-  emit('view',job.value,row.id)
 }
 function retry(row:BatchItem) {
   if(active.value || row.state!=='failed' || row.id) return
@@ -148,14 +144,13 @@ onBeforeUnmount(()=>{disposed=true;if(poller)clearTimeout(poller)})
           <li v-for="row in items" :key="row.key">
             <div><strong :title="row.path">{{ row.path }}</strong><small v-if="row.message">{{ row.message }}</small></div>
             <ElTag size="small" :type="row.state==='failed'?'danger':row.state==='published'?'success':'info'">{{ labels[row.state] }}</ElTag>
-            <ElButton v-if="single && row.id" text type="primary" @click="view(row)">查看简历</ElButton>
-            <ElButton v-else-if="row.state==='failed' && !row.id" text type="primary" @click="retry(row)">重试</ElButton>
+            <ElButton v-if="row.state==='failed' && !row.id" text type="primary" @click="retry(row)">重试</ElButton>
           </li>
         </ul>
       </template>
     </div>
     <template #footer><ElButton @click="emit('update:modelValue',false)">{{ locked?'在后台处理':'关闭' }}</ElButton>
-      <ElButton type="primary" :icon="CloudUploadOutline" :loading="active" :disabled="!activeJob || !ready" @click="submit">导入{{ ready?' '+ready+' 份':'' }}</ElButton></template>
+      <ElButton v-if="ready || active" type="primary" :icon="CloudUploadOutline" :loading="active" :disabled="!activeJob" @click="submit">导入{{ !single && ready?' '+ready+' 份':'' }}</ElButton></template>
   </ElDialog>
 </template>
 <style scoped>

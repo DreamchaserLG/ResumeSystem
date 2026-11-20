@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowBackOutline, DocumentTextOutline, SparklesOutline } from '@vicons/ionicons5'
+import { ArrowBackOutline, DocumentTextOutline } from '@vicons/ionicons5'
 import { ElButton, ElPagination, ElProgress, ElSelect, ElOption, ElTag, ElTooltip } from 'element-plus'
 import { api } from '@/api/client'
 import { jobStatusLabel, label, schoolTagLabels, type JobCandidatePage, type ResumeCard } from '@/api/hr'
@@ -95,6 +95,7 @@ function buildMock(jobKey:string,pageNum:number,pageSize:number):JobCandidatePag
     if(rand()<=.85) tags.push({id:'school-'+index,type:'school',value:pick(Object.keys(schoolPool)),filterable:true})
     tags.push({id:'exp-'+index,type:'experience',value:String(index%4===0?0:48+Math.floor(rand()*144)),filterable:true})
     return {id:(Number(jobKey)||index+1)*1000+index+1,version_id:null,job_id:job.id,job_title:job.title,name:pick(surnamePool)+pick(givenPool),
+      candidate_id:(Number(jobKey)||index+1)*1000+index+1,in_talent:rand()>.6,talent_status:rand()>.6?pick(['interviewing','hired','rejected']):null,
       target_role:pick(rolePool),gender:null,city:pick(cityPool),address:null,phone:null,status:'active',
       stage:{code:'review' as const,label:'待筛选',round_id:null},workflow_version:1,parse_status:'published',
       page_count:1+Math.floor(rand()*2),has_avatar:false,tags,latest_note:rand()>.28?pick(notePool):null,
@@ -147,7 +148,6 @@ onBeforeUnmount(releaseAvatars)
           <header class="candidates-title">
             <div><h2>关联简历 <ElTag v-if="demo" size="small" type="warning" effect="plain">演示数据</ElTag> <span>{{ data.total }} 份</span></h2><p v-if="data.matched_requirements">根据已识别的 {{ data.matched_requirements }} 项岗位要求排序；点击候选人查看匹配报告。</p><p v-else>点击候选人查看右侧匹配报告。</p></div>
             <div class="candidate-list-actions">
-              <ElTooltip content="AI 分析" placement="bottom"><ElButton circle aria-label="AI 分析" @click="router.push({name:'analysis',query:{job:data.job.id}})"><SparklesOutline aria-hidden="true"/></ElButton></ElTooltip>
               <ElTooltip content="打开候选人工作台" placement="bottom"><ElButton circle aria-label="打开候选人工作台" :disabled="!selected" @click="selected && openProfile(selected.id)"><DocumentTextOutline aria-hidden="true"/></ElButton></ElTooltip>
               <button type="button" class="report-toggle" :aria-pressed="reportVisible"
                 :title="reportVisible?'收起匹配报告':'展开匹配报告'" :aria-label="reportVisible?'收起匹配报告':'展开匹配报告'" @click="toggleReport">
@@ -159,7 +159,7 @@ onBeforeUnmount(releaseAvatars)
               </button>
             </div>
           </header>
-          <div class="candidate-grid-head" aria-hidden="true"><span>候选人</span><span>跟进</span><span>匹配度</span></div>
+          <div class="candidate-grid-head" aria-hidden="true"><span>候选人</span><span>匹配度</span></div>
           <div v-if="data.items.length" class="candidate-rows" role="list" aria-label="关联候选人列表">
             <article v-for="row in data.items" :key="row.id" class="candidate-row" :class="{selected:row.id===selected?.id}" role="listitem" tabindex="0" @click="selectCandidate(row)" @keydown.enter="selectCandidate(row)">
               <div class="candidate-person">
@@ -172,7 +172,6 @@ onBeforeUnmount(releaseAvatars)
                   <small>{{ [row.target_role || row.job_title, experienceText(row.tags)].filter(Boolean).join(' · ') || '—' }}</small>
                 </div>
               </div>
-              <div class="candidate-followup" :class="{'is-empty':!row.latest_note}">{{ row.latest_note || '—' }}</div>
               <div class="candidate-progress"><ElProgress v-if="row.match_percent!=null" :percentage="row.match_percent" :stroke-width="8" :show-text="false" :color="matchColor(row.match_percent)"/><span v-else class="progress-empty">—</span></div>
             </article>
           </div>
@@ -233,6 +232,7 @@ onBeforeUnmount(releaseAvatars)
 .candidate-row.selected { background:linear-gradient(90deg,#e9f8f4,#f8fcfb);box-shadow:inset 3px 0 var(--hire-accent),inset 12px 0 24px rgba(13,137,126,.035); }
 .candidate-workbench { grid-template-columns:minmax(680px,1fr) clamp(440px,31vw,530px);gap:18px; }
 .candidate-workbench.report-collapsed { grid-template-columns:minmax(0,1fr); }
+.candidate-grid-head,.candidate-row {grid-template-columns:minmax(0,1fr) minmax(84px,.38fr)}
 .candidate-job-list { min-height:calc(100dvh - var(--rs-header-height) - 190px); }
 .explain-report {
   display:flex;flex-direction:column;height:calc(100dvh - var(--rs-header-height) - 24px);min-height:min(620px,calc(100dvh - var(--rs-header-height) - 24px));max-height:calc(100dvh - var(--rs-header-height) - 24px);

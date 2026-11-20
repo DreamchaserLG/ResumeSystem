@@ -17,6 +17,7 @@ dist/
 /resume/通用/
 
 /storage/
+/models/translation/
 /data/
 /eval/m3_report.json
 *.log

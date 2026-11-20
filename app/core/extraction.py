@@ -62,6 +62,7 @@ DATE = r"(?:19|20)\d{2}(?:(?:[./年-](?:0?[1-9]|1[0-2]))(?:[./月-](?:0?[1-9]|[1
 PERIOD = re.compile(rf"({DATE})\s*(?:[-–—~～]|\bto\b|至|到)\s*({DATE}|至今|今|现在|present|current)", re.I)
 PAIR = re.compile(r"^\s*([^:：|]{1,25})[:：]\s*(.+?)\s*$")
 PART = re.compile(r"[^|；;\n]+")
+PROJECT_LINE = re.compile(r"[^\n]+")
 ALLOWED_LABEL = re.compile(r"^[\w\u3400-\u9fff ._-]{1,25}$")
 ORG = re.compile(r"有限公司|集团|研究院|\b(?:inc\.?|corp\.?|ltd\.?)\b", re.I)
 SCHOOL = re.compile(r"大学|学院|\b(?:university|college|institute)\b", re.I)
@@ -175,8 +176,8 @@ def _source(span, start, end):
     return Source(span.span_no, start, end, span.raw_text[start:end], span.ocr_confidence)
 
 
-def _line_parts(span):
-    for line in PART.finditer(span.raw_text or ""):
+def _line_parts(span, pattern=PART):
+    for line in pattern.finditer(span.raw_text or ""):
         raw = line[0].strip()
         if raw and raw.strip("█ "):
             start = line.start() + len(line[0]) - len(line[0].lstrip())
@@ -243,7 +244,8 @@ def extract_document(document, aliases, skills, schools, programming_languages=f
             profile.add("profile.name", "".join(heading_text.split()), _source(span, start, start + len(heading_text)))
             profile.heuristic.add("profile.name")
             continue
-        block_lines = list(_line_parts(span))
+        # Preserve the project's bullets, headings and punctuation in the source.
+        block_lines = list(_line_parts(span, PROJECT_LINE if section == "project" else PART))
         # PDF text blocks can group columns of one row as separate short lines:
         # date range, project name and role. Recognize that shape before free text.
         if section == "project" and 2 <= len(block_lines) <= 3:
@@ -266,6 +268,9 @@ def extract_document(document, aliases, skills, schools, programming_languages=f
             if normalized_heading in {"简历", "个人简历", "求职简历", "演示简历", "resume", "curriculum vitae", "cv"}:
                 continue
             heading = SECTION.get(normalized_heading)
+            if section == "project" and normalized_heading in {"技术栈", "项目简介", "项目成果", "项目职责"}:
+                current.add("project.description", text, line)
+                continue
             if heading:
                 section = heading
                 current = profile if section == "profile" else Record("work" if section == "internship" else section)
@@ -276,6 +281,8 @@ def extract_document(document, aliases, skills, schools, programming_languages=f
                 continue
             pair = PAIR.fullmatch(text)
             key = (aliases.get(norm(pair[1])) or LABELS.get(norm(pair[1]))) if pair else None
+            if section == "project" and key == "work.description":
+                key = "project.description"
             heading_key = norm(pair[1]) if pair else ""
             language_line = heading_key in LANGUAGE_HEADERS
             if language_line or heading_key in SKILL_HEADERS or section == "skill" and key is None and pair:
@@ -284,7 +291,10 @@ def extract_document(document, aliases, skills, schools, programming_languages=f
             value = source.value
             if pair and norm(pair[1]) in {"求职意向", "期望职业", "期望岗位"} and len(value) <= 50 and not re.search(r"[。!?！？]", value):
                 key = "profile.target_role"
-            period = parse_period(value) if section in {"education", "work", "internship", "project"} or key == "period" else None
+            period = parse_period(value) if (
+                section in {"education", "work", "internship"} or key == "period"
+                or section == "project" and PERIOD.match(norm(value))
+            ) else None
             if section == "education" and not period and (key == "education.school_raw" or not pair):
                 header = _education_header(value, schools)
                 if header:
@@ -369,6 +379,9 @@ def extract_document(document, aliases, skills, schools, programming_languages=f
                     profile.issues.pop(key, None)
                     profile.heuristic.discard(key)
                 profile.add(key, "".join(value.split()) if key == "profile.name" and HAN_NAME.fullmatch(value) else value, source)
+            elif current.kind == "project" and key in {None, "project.description", "skill.name"}:
+                # Preserve the label while skill matching uses the value's exact range.
+                current.add("project.description", text, line)
             elif key and key in LABELS.values() and key not in {"skill.name", "period"}:
                 current.add(key, value, source)
             elif pair and key not in LABELS.values() and ALLOWED_LABEL.fullmatch(pair[1].strip()):

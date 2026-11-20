@@ -113,7 +113,7 @@ def detect_photo_on_pdf_page(pdf_path: str, page_no: int, zoom: float = 2.0) -> 
     with pymupdf.open(pdf_path) as doc:
         page = doc[page_no - 1]
         rects = list(_image_rects(page))
-        if not rects:
+        if not rects and page_no != 1:
             return []
         pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), annots=False)
         img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")

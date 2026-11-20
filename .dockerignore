@@ -1,4 +1,5 @@
 .env
+.git
 .venv
 .pytest_cache
 **/__pycache__
@@ -9,3 +10,4 @@ eval
 # 演示数据集的简历与预览只用于本地运行，不进入镜像构建上下文
 resume
 showcase
+models/translation

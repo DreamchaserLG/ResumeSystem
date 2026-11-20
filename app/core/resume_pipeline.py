@@ -8,7 +8,9 @@ from sqlalchemy import text
 from app.core.extraction import RULE_VERSION, extract_document, norm
 
 DETAILS = {
-    "profile": ("resume_profile", ("name", "city", "photo_present", "target_role")),
+    "profile": ("resume_profile", (
+        "name", "city", "photo_present", "target_role", "declared_work_years", "expected_work_location",
+    )),
     "contact": ("resume_contact", ("type", "value")),
     "education": ("resume_education", ("school_raw", "school_id", "degree_level", "major", "start_date", "end_date", "start_period_raw", "end_period_raw")),
     "work": ("resume_work", ("company", "title", "employment_type", "start_date", "end_date", "start_period_raw", "end_period_raw", "is_current", "description")),
@@ -177,5 +179,9 @@ def publish(connection, version_id):
         UPDATE application SET active_version_id=:v,pending_version_id=NULL
         WHERE deleted_at IS NULL AND (pending_version_id=:v
             OR (pending_version_id IS NULL AND active_version_id IS NULL AND submitted_version_id=:v))
+    """), {"v": version_id})
+    connection.execute(text("""
+        UPDATE resume_dropfile f SET status='imported',fail_reason=NULL,processed_at=now()
+        FROM application a WHERE a.id=f.application_id AND a.active_version_id=:v AND a.deleted_at IS NULL
     """), {"v": version_id})
     bump_search(connection)

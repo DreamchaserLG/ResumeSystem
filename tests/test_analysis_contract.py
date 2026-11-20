@@ -99,6 +99,34 @@ def test_no_session_no_context(patched_stats, fresh_memory):
     assert last(events, "done")["source"] == "llm"
 
 
+def test_analysis_sends_sse_when_requested(patched_stats, fresh_memory):
+    from starlette.requests import Request
+
+    module, _ = patched_stats
+    fake_provider(module, ["F1：近 30 天新增投递 41 份。\n【数据限制】渠道来源指标未接入。\n【可执行核对】核对编制计划。"])
+    request = Request({"type":"http", "headers":[(b"accept", b"text/event-stream")]})
+    response = analysis(AnalysisInput(question="本月投递与录取趋势"), make_auth(), request)
+    import asyncio
+
+    async def drain():
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(drain())
+    assert response.media_type == "text/event-stream"
+    assert chunks[0].startswith("data: {") and chunks[0].endswith("\n\n")
+    assert json.loads(chunks[-1][6:].strip())["event"] == "done"
+
+
+def test_compatible_model_reasoning_field(monkeypatch):
+    from io import BytesIO
+    from app.api import recruiting_analysis as module
+
+    payload = {"choices":[{"delta":{"reasoning":"Review the evidence.","content":"答复"}}]}
+    monkeypatch.setattr(module, "urlopen", lambda request,timeout: BytesIO(("data: "+json.dumps(payload)+"\n").encode()))
+    assert list(module._stream_chat(object(), timeout=5)) == [
+        ("thinking", "Review the evidence."), ("content", "答复")]
+
+
 def test_first_turn_context(patched_stats, fresh_memory):
     module, report = patched_stats
     fake_provider(module, ["F1：近 30 天新增投递 41 份，较上期减少 12 份。\n【数据限制】渠道来源指标未接入。\n【可执行核对】核对编制计划。"])

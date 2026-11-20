@@ -1,17 +1,27 @@
-/** 本地历史对话：只存问题与摘要，不存报表明细（体量太大且可重算）。 */
+/** 本地历史对话：保留多轮问答和思考文本，报表明细仍可按需重算。 */
 import { defineStore } from 'pinia'
+
+export interface AnalysisHistoryTurn {
+  question: string
+  summary: string
+  at: number
+  source?: 'llm' | 'rules'
+  thinking?: string
+  fileNames?: string[]
+}
 
 export interface AnalysisHistoryItem {
   id: string
   question: string
   summary: string
+  turns?: AnalysisHistoryTurn[]
   at: number
   source?: 'llm' | 'rules'
   departmentId?: number
   departmentName?: string
   jobId?: number
   jobTitle?: string
-  /** 用户重命名后的标题，为空时回落到 question。 */
+  /** 从首轮问题生成的标题，可由用户重命名。 */
   title?: string
   pinned?: boolean
   archived?: boolean
@@ -105,13 +115,15 @@ export const useAnalysisHistory = defineStore('analysisHistory', {
       persist(this.items)
       return item
     },
-    /** 续接已有会话：更新结论并提到最前，不新增条目。 */
-    touch(id: string, summary: string, source?: 'llm' | 'rules') {
+    /** 续接已有会话：追加一轮并提到最前，不新增侧栏条目。 */
+    appendTurn(id: string, turn: AnalysisHistoryTurn) {
       const target = this.items.find(item => item.id === id)
       if (!target) return
-      target.summary = summary
-      target.source = source ?? target.source
-      target.at = Date.now()
+      target.turns = [...(target.turns || [{question:target.question,summary:target.summary,
+        source:target.source,at:target.at}]),turn].slice(-20)
+      target.summary = turn.summary
+      target.source = turn.source ?? target.source
+      target.at = turn.at
       this.items = [target, ...this.items.filter(item => item.id !== id)]
       persist(this.items)
     },

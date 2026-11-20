@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NLayout,
@@ -8,24 +8,13 @@ import {
   NLayoutContent,
 } from 'naive-ui'
 import {
-  ArchiveOutline,
-  ArrowUndoOutline,
   BarChartOutline,
-  ChevronDownOutline,
-  ChevronForwardOutline,
-  CreateOutline,
   DocumentsOutline,
-  EllipsisHorizontalOutline,
   BriefcaseOutline,
-  LinkOutline,
   PeopleOutline,
-  PinOutline,
-  SearchOutline,
-  TrashOutline,
 } from '@vicons/ionicons5'
 import ProfileMenu from '@/components/ProfileMenu.vue'
 import { useAuthStore } from '@/stores/auth'
-import { historyTime, useAnalysisHistory } from '@/stores/analysisHistory'
 import { api } from '@/api/client'
 
 const route = useRoute()
@@ -48,7 +37,6 @@ onMounted(()=>{
   narrow.addEventListener('change',onWidth)
   window.addEventListener('focus',checkSession)
   document.addEventListener('visibilitychange',checkSession)
-  document.addEventListener('click',closeMenu)
   /* 收起后点击侧栏任意位置都展开（含空白区），无需命中具体按钮。 */
   siderEl=document.querySelector('.sider')
   siderEl?.addEventListener('click',expandSider)
@@ -58,7 +46,6 @@ onUnmounted(()=>{
   narrow.removeEventListener('change',onWidth)
   window.removeEventListener('focus',checkSession)
   document.removeEventListener('visibilitychange',checkSession)
-  document.removeEventListener('click',closeMenu)
   siderEl?.removeEventListener('click',expandSider)
   clearInterval(sessionTimer)
 })
@@ -69,74 +56,8 @@ const menuItems = computed(()=>[
   { label: 'AI 分析', key: 'analysis', icon: BarChartOutline },
 ])
 const activeMenu = computed(() => route.name === 'job-candidates' ? 'jobs' : route.name === 'application-detail' ? 'applications' : route.name)
-const history = useAnalysisHistory()
-const keyword = ref('')
-const activeHistory = computed(() => String(route.query.h ?? ''))
-/* 搜索时忽略折叠状态，否则命中的对话藏在收起的文件夹里。 */
-const visibleFolders = computed(() => {
-  const query = keyword.value.trim().toLowerCase()
-  if (!query) return history.folders
-  return history.folders
-    .map(folder => ({
-      ...folder,
-      items: folder.items.filter(item =>
-        item.question.toLowerCase().includes(query) || item.summary.toLowerCase().includes(query)),
-    }))
-    .filter(folder => folder.items.length > 0)
-})
-function openHistory(id: string) { void router.push({ name: 'analysis', query: { h: id } }) }
 /* 收起状态点侧边栏任意位置都展开，接近 GPT 的操作手感。 */
 function expandSider() { if (collapsed.value) collapsed.value = false }
-/* 删除需要二次确认，避免误删本地唯一副本。 */
-const pendingDelete = ref('')
-let pendingTimer: ReturnType<typeof setTimeout> | undefined
-function requestDelete(id: string) {
-  if (pendingDelete.value === id) {
-    pendingDelete.value = ''
-    if (pendingTimer) clearTimeout(pendingTimer)
-    history.remove(id)
-    menuId.value = ''
-    if (activeHistory.value === id) void router.push({ name: 'analysis' })
-    return
-  }
-  pendingDelete.value = id
-  if (pendingTimer) clearTimeout(pendingTimer)
-  pendingTimer = setTimeout(() => { pendingDelete.value = '' }, 2600)
-}
-
-/* 条目操作菜单：置顶 / 重命名 / 复制链接 / 归档 / 删除。 */
-const menuId = ref('')
-const renamingId = ref('')
-const renameDraft = ref('')
-const copiedMenuId = ref('')
-let copiedTimer: ReturnType<typeof setTimeout> | undefined
-function toggleMenu(id: string) {
-  renamingId.value = ''
-  menuId.value = menuId.value === id ? '' : id
-}
-function closeMenu() { menuId.value = '' }
-async function startRename(item: { id: string; title?: string; question: string }) {
-  menuId.value = ''
-  renamingId.value = item.id
-  renameDraft.value = item.title || item.question
-  await nextTick()
-  ;(document.querySelector('.side-rename') as HTMLInputElement | null)?.focus()
-}
-function commitRename() {
-  if (!renamingId.value) return
-  history.rename(renamingId.value, renameDraft.value)
-  renamingId.value = ''
-}
-async function copyLink(id: string) {
-  const url = location.origin + '/analysis?h=' + encodeURIComponent(id)
-  try { await navigator.clipboard.writeText(url) } catch { /* 剪贴板不可用时仍保留菜单 */ }
-  copiedMenuId.value = id
-  if (copiedTimer) clearTimeout(copiedTimer)
-  copiedTimer = setTimeout(() => { copiedMenuId.value = '' }, 1800)
-}
-function pickPin(id: string) { history.togglePin(id); menuId.value = '' }
-function pickArchive(id: string) { history.archive(id); menuId.value = '' }
-function pickUnarchive(id: string) { history.unarchive(id); menuId.value = '' }
 
 function logout() {
   auth.logout()
@@ -212,84 +133,11 @@ function logout() {
           <span v-if="!collapsed">{{ item.label }}</span>
         </RouterLink>
       </nav>
-      <section v-if="!collapsed && (history.items.length || route.name === 'analysis')" class="side-history" aria-label="历史对话">
-        <header class="side-history-head">
-          <span>历史对话</span>
-          <span v-if="history.items.length">{{ history.items.length }}</span>
-        </header>
-        <p v-if="!history.items.length" class="side-history-empty">暂无对话记录</p>
-        <label v-else class="side-search">
-          <SearchOutline aria-hidden="true"/>
-          <input v-model="keyword" type="search" placeholder="搜索对话" aria-label="搜索历史对话">
-        </label>
-        <p v-if="history.items.length && !visibleFolders.length" class="side-history-empty">没有匹配的对话</p>
-        <div v-for="folder in visibleFolders" :key="folder.key" class="side-folder">
-          <button type="button" class="side-folder-head" :aria-expanded="!history.isCollapsed(folder.key)"
-            :title="folder.sub ? folder.name + ' · ' + folder.sub : folder.name" @click="history.toggleFolder(folder.key)">
-            <ChevronForwardOutline v-if="history.isCollapsed(folder.key) && !keyword.trim()" class="folder-caret" aria-hidden="true"/>
-            <ChevronDownOutline v-else class="folder-caret" aria-hidden="true"/>
-            <span class="folder-name">{{ folder.name }}</span>
-            <b>{{ folder.items.length }}</b>
-          </button>
-          <template v-if="!history.isCollapsed(folder.key) || keyword.trim()">
-            <div v-for="item in folder.items" :key="item.id" class="side-history-row"
-              :data-active="activeHistory === item.id ? 'true' : undefined">
-              <input v-if="renamingId === item.id" v-model="renameDraft" class="side-rename" maxlength="60"
-                aria-label="重命名对话" @keydown.enter.prevent="commitRename" @keydown.esc="renamingId = ''" @blur="commitRename">
-              <button v-else type="button" class="side-history-item"
-                :aria-current="activeHistory === item.id ? 'true' : undefined" :title="item.question" @click="openHistory(item.id)">
-                <span class="side-history-q">
-                  <PinOutline v-if="item.pinned" class="pin-mark" aria-hidden="true"/>{{ item.title || item.question }}
-                </span>
-                <span v-if="item.summary" class="side-history-abstract">{{ item.summary }}</span>
-                <span class="side-history-meta"><b>{{ historyTime(item.at) }}</b></span>
-              </button>
-              <button v-if="renamingId !== item.id" type="button" class="side-more" aria-label="更多操作"
-                :aria-expanded="menuId === item.id" @click.stop="toggleMenu(item.id)"><EllipsisHorizontalOutline aria-hidden="true"/></button>
-              <div v-if="menuId === item.id" class="side-menu" @click.stop>
-                <button type="button" @click="pickPin(item.id)"><PinOutline aria-hidden="true"/><span>{{ item.pinned ? '取消置顶' : '置顶' }}</span></button>
-                <button type="button" @click="startRename(item)"><CreateOutline aria-hidden="true"/><span>重命名</span></button>
-                <button type="button" @click="copyLink(item.id)"><LinkOutline aria-hidden="true"/><span>{{ copiedMenuId === item.id ? '已复制链接' : '复制分享链接' }}</span></button>
-                <button type="button" @click="pickArchive(item.id)"><ArchiveOutline aria-hidden="true"/><span>归档</span></button>
-                <button type="button" class="danger" @click="requestDelete(item.id)"><TrashOutline aria-hidden="true"/><span>{{ pendingDelete === item.id ? '确认删除' : '删除' }}</span></button>
-              </div>
-            </div>
-          </template>
-        </div>
-
-        <div v-if="history.archived.length" class="side-archive">
-          <button type="button" class="side-folder-head" :aria-expanded="!history.isCollapsed('__archived')"
-            @click="history.toggleFolder('__archived')">
-            <ChevronDownOutline v-if="!history.isCollapsed('__archived')" class="folder-caret" aria-hidden="true"/>
-            <ChevronForwardOutline v-else class="folder-caret" aria-hidden="true"/>
-            <span class="folder-name">已归档</span>
-            <b>{{ history.archived.length }}</b>
-          </button>
-          <template v-if="!history.isCollapsed('__archived')">
-            <div v-for="item in history.archived" :key="item.id" class="side-history-row"
-              :data-active="activeHistory === item.id ? 'true' : undefined">
-              <button type="button" class="side-history-item is-archived"
-                :aria-current="activeHistory === item.id ? 'true' : undefined" :title="item.question" @click="openHistory(item.id)">
-                <span class="side-history-q">{{ item.title || item.question }}</span>
-                <span v-if="item.summary" class="side-history-abstract">{{ item.summary }}</span>
-                <span class="side-history-meta"><b>{{ historyTime(item.at) }}</b></span>
-              </button>
-              <button type="button" class="side-more" aria-label="更多操作" :aria-expanded="menuId === item.id"
-                @click.stop="toggleMenu(item.id)"><EllipsisHorizontalOutline aria-hidden="true"/></button>
-              <div v-if="menuId === item.id" class="side-menu" @click.stop>
-                <button type="button" @click="pickUnarchive(item.id)"><ArrowUndoOutline aria-hidden="true"/><span>恢复</span></button>
-                <button type="button" @click="copyLink(item.id)"><LinkOutline aria-hidden="true"/><span>{{ copiedMenuId === item.id ? '已复制链接' : '复制分享链接' }}</span></button>
-                <button type="button" class="danger" @click="requestDelete(item.id)"><TrashOutline aria-hidden="true"/><span>{{ pendingDelete === item.id ? '确认删除' : '删除' }}</span></button>
-              </div>
-            </div>
-          </template>
-        </div>
-      </section>
     </NLayoutSider>
 
     <!-- 主体 -->
     <NLayout>
-      <NLayoutHeader bordered class="header">
+      <NLayoutHeader v-if="route.name !== 'analysis'" bordered class="header">
         <div class="header-left">
           <span v-if="route.name !== 'analysis'" class="page-title">{{ (route.meta.title as string) ?? '' }}</span>
         </div>
@@ -298,7 +146,7 @@ function logout() {
         </div>
       </NLayoutHeader>
 
-      <NLayoutContent class="content recruiting-content" content-style="height:100%;">
+      <NLayoutContent class="content recruiting-content" :class="{'analysis-content':route.name==='analysis'}" content-style="height:100%;">
         <RouterView v-slot="{ Component }">
           <Transition name="fade-slide" mode="out-in">
             <component :is="Component" />
@@ -379,215 +227,6 @@ function logout() {
 .side-icon { width:20px; height:20px; flex:none; color:inherit; filter: drop-shadow(0 2px 5px rgba(0,0,0,.1)); }
 .collapsed .side-link { justify-content:center; padding:0; }
 .collapsed .side-link:hover { transform: none; }
-
-.side-history {
-  display: grid;
-  gap: 2px;
-  align-content: start;
-  margin: 4px 10px 14px;
-  padding: 10px 0 4px;
-  border-top: 1px solid rgba(189, 226, 226, .14);
-  max-height: calc(100dvh - 250px);
-  overflow: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(189, 226, 226, .28) transparent;
-}
-.side-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 2px 2px 7px;
-  padding: 5px 8px;
-  border: 1px solid rgba(189, 226, 226, .18);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, .05);
-  color: #9fbdc1;
-  transition: border-color var(--rs-motion-fast), background-color var(--rs-motion-fast);
-}
-.side-search svg { width: 13px; height: 13px; flex: none; opacity: .8; }
-.side-search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: #e2f1f1;
-  font: inherit;
-  font-size: 12px;
-  outline: none;
-}
-.side-search input::placeholder { color: #7c9ca3; }
-.side-search:focus-within { border-color: rgba(123, 221, 211, .55); background: rgba(255, 255, 255, .08); }
-.side-history-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 7px 7px;
-  color: #86a9af;
-  font-size: 11px;
-  letter-spacing: .08em;
-}
-.side-history-empty {
-  margin: 0;
-  padding: 6px 8px 10px;
-  color: #7c9ca3;
-  font-size: 12px;
-}
-.side-history-item {
-  display: grid;
-  gap: 3px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  background: transparent;
-  color: #c9d9dd;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--rs-motion-fast), border-color var(--rs-motion-fast), color var(--rs-motion-fast);
-}
-.side-history-item:hover { background: rgba(255, 255, 255, .07); color: #fff; }
-.side-history-item[aria-current=true] {
-  border-color: rgba(99, 218, 204, .19);
-  background: linear-gradient(90deg, rgba(32, 177, 162, .2), rgba(255, 255, 255, .04));
-  color: #effffb;
-}
-.side-history-item:focus-visible { outline: 2px solid #7bddd3; outline-offset: -2px; }
-.side-folder { display: grid; gap: 1px; }
-.side-folder-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 7px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: #a6c1c5;
-  font-size: 11.5px;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--rs-motion-fast), color var(--rs-motion-fast);
-}
-.side-folder-head:hover { background: rgba(255, 255, 255, .05); color: #e6f4f4; }
-.side-folder-head b { margin-inline-start: auto; color: #7fa1a7; font-size: 10.5px; font-weight: 500; }
-.folder-caret { width: 13px; height: 13px; flex: none; opacity: .8; }
-.folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.side-folder .side-history-item { padding-inline-start: 6px; }
-/* 左侧一列小横线，方便快速定位到每一条对话；当前项加粗。 */
-.side-history-row { position: relative; padding-inline-start: 10px; }
-.side-history-row::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 14px;
-  width: 2px;
-  height: 15px;
-  border-radius: 2px;
-  background: rgba(189, 226, 226, .3);
-  transition: background-color var(--rs-motion-fast), height var(--rs-motion-fast);
-}
-.side-history-row[data-active=true]::before { top: 11px; width: 3px; height: 21px; background: #eafffb; }
-.side-history-row .side-history-item { width: 100%; padding-inline-end: 24px; }
-.side-history-q { display: flex; align-items: center; gap: 4px; color: #e4f0f0; font-weight: 560; }
-.pin-mark { width: 11px; height: 11px; flex: none; color: #7bddd3; }
-.side-history-abstract {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  color: #8fadb2;
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.side-more {
-  position: absolute;
-  top: 6px;
-  right: 3px;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: #8fadb2;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--rs-motion-fast), background-color var(--rs-motion-fast), color var(--rs-motion-fast);
-}
-.side-history-row:hover .side-more,
-.side-more[aria-expanded=true],
-.side-more:focus-visible { opacity: 1; }
-.side-more:hover { background: rgba(255, 255, 255, .12); color: #fff; }
-.side-more svg { width: 15px; height: 15px; }
-.side-menu {
-  position: absolute;
-  z-index: 30;
-  top: 30px;
-  right: 2px;
-  display: grid;
-  gap: 1px;
-  width: 186px;
-  padding: 5px;
-  border: 1px solid rgba(189, 226, 226, .18);
-  border-radius: 10px;
-  background: #0f2d34;
-  box-shadow: 0 16px 32px rgba(0, 0, 0, .42);
-}
-.side-menu button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: #cfe3e3;
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.side-menu button:hover { background: rgba(255, 255, 255, .08); color: #fff; }
-.side-menu button svg { width: 14px; height: 14px; flex: none; opacity: .85; }
-.side-menu button.danger { color: #f0a3a3; }
-.side-menu button.danger:hover { background: rgba(163, 59, 59, .3); color: #fff; }
-.side-rename {
-  width: 100%;
-  padding: 7px 9px;
-  border: 1px solid rgba(123, 221, 211, .55);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, .08);
-  color: #eaffff;
-  font: inherit;
-  font-size: 12.5px;
-  outline: none;
-}
-.side-history-item.is-archived { opacity: .72; }
-.side-archive {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px dashed rgba(189, 226, 226, .16);
-}
-.side-history-q {
-  overflow: hidden;
-  font-size: 12.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.side-history-meta {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: #7fa1a7;
-  font-size: 10.5px;
-  min-width: 0;
-}
-.side-history-meta b { flex: none; font-weight: 500; font-variant-numeric: tabular-nums; }
 
 .logo-bar {
   height: var(--rs-header-height);
@@ -704,6 +343,7 @@ function logout() {
   height:calc(100dvh - var(--rs-header-height));
   background: transparent;
 }
+.content.analysis-content {height:100dvh}
 
 @media (max-width: 759px) {
   .header { padding: 0 16px; }

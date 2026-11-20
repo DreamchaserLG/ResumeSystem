@@ -11,9 +11,8 @@ BANNED = (
 NUM = re.compile(r"\d+(?:\.\d+)?")
 FID = re.compile(r"([FA]\d+)：")
 SCORE = re.compile(r"\d+\s*(?:分|%|％)|[ABC]\s*档|排名\s*\d")
-# stats 350：复杂事实块（6 facts + 3 anomalies）实测模型输出 260-330 字且逐轮抖动，220/320 会系统性触发 too_long
-LIMIT = {"stats": 350, "match": 120}
-STRUCT = ("核对", "待核实", "不满足", "【")
+# 保留有证据的展开分析，同时防止失控的长回答。
+LIMIT = {"stats": 900, "match": 750}
 
 
 def _walk(node):
@@ -29,6 +28,7 @@ def _walk(node):
 
 def fact_numbers(facts) -> set[str]:
     """Every numeric token that legitimately appears in the fact block."""
+    facts = {key: value for key, value in facts.items() if key != "question"}
     allowed: set[str] = set()
     for chunk in _walk(facts):
         allowed.update(NUM.findall(chunk))
@@ -56,13 +56,17 @@ def _overlap(a: str, b: str, n: int = 6) -> int:
 def _trace_problems(text: str, facts: dict, kind: str) -> list[str]:
     """stats 靠 fact_id 追溯；match 靠 evidence 原文逐字追溯（两类格式不同，不能共用一套）。"""
     if kind == "match":
-        quotes = [row["evidence"]["quote"] for row in facts.get("per_skill", [])
-                  if row.get("evidence")]
-        evidence = [line.strip() for line in text.splitlines()
-                    if line.strip() and not line.strip().startswith(STRUCT)]
-        if not evidence:
-            return []
-        bad = [line for line in evidence if not any(_overlap(line, q) >= 6 for q in quotes)]
+        quotes = {row["skill"]:row["evidence"]["quote"] for row in facts.get("per_skill", [])
+                  if row.get("evidence")}
+        region = text
+        if "【原文证据】" in text:
+            region = text.split("【原文证据】",1)[1].split("【待核实】",1)[0].split("【人工下一步】",1)[0]
+        evidence = [(line.strip(),skill,quote) for line in region.splitlines()
+                    for skill,quote in quotes.items()
+                    if re.match(r"^\s*[-•]?\s*" + re.escape(skill) + r"：", line)]
+        bad = [line for line,_,quote in evidence if _overlap(line, quote) < 6]
+        if quotes and not evidence:
+            return ["evidence_missing"]
         return ["evidence_not_verbatim:" + str(len(bad))] if bad else []
     used = FID.findall(text)
     if not used:
@@ -93,6 +97,13 @@ def check(text: str, facts: dict, kind: str = "stats") -> list[str]:
 
     if len(text) > LIMIT.get(kind, 220):
         problems.append(f"too_long:{len(text)}")
-    if kind == "match" and SCORE.search(text):
-        problems.append("score_or_grade")
+    if kind == "match":
+        counts = facts.get("counts", {})
+        expected = (f"核对 {facts.get('required_count')} 项要求："
+                    f"{counts.get('met')} 项有证据，{counts.get('partial')} 项部分匹配，"
+                    f"{counts.get('unverified')} 项待核实，{counts.get('not_met')} 项不满足。")
+        if expected not in text:
+            problems.append("count_mismatch")
+        if SCORE.search(text):
+            problems.append("score_or_grade")
     return problems

@@ -120,7 +120,7 @@ def parse_docx(path: str) -> ParsedDocument:
 
     # 内嵌图片：记录 part 名，pipeline 提取二进制后走照片检测
     for rel in d.part.rels.values():
-        if "image" in rel.reltype:
+        if "image" in rel.reltype and not rel.is_external:
             pd.meta["embedded_images"].append(str(rel.target_part.partname).lstrip("/"))
 
     pd.finalize()
@@ -134,7 +134,7 @@ def extract_embedded_images(path: str) -> list[tuple[str, bytes]]:
     d = docx.Document(path)
     out = []
     for rel in d.part.rels.values():
-        if "image" in rel.reltype:
+        if "image" in rel.reltype and not rel.is_external:
             blob = rel.target_part.blob
             try:
                 from PIL import Image

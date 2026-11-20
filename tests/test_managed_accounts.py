@@ -1,7 +1,10 @@
 """Exercise administrator account lifecycle against real sessions and persistence."""
+import base64
+from io import BytesIO
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import text
 
 from app.core.db import owner_engine
@@ -62,3 +65,32 @@ def test_admin_can_disable_enable_and_remove_accounts():
         invited.raise_for_status()
         assert invited.json()["user_id"]!=user_id
         client.delete(f"/api/v1/admin/users/{invited.json()['user_id']}",headers=headers).raise_for_status()
+
+
+def test_admin_creates_account_with_contact_and_avatar():
+    image=BytesIO()
+    Image.new("RGB",(32,32),(19,142,126)).save(image,format="PNG")
+    with TestClient(app) as client:
+        admin=sign_in(client,{"email":"admin@company.internal","password":"admin123"})
+        admin.raise_for_status()
+        headers={"X-Session-Token":admin.json()["token"]}
+        body={"email":f"profile-{uuid4().hex[:10]}@company.internal","password":"verify-1234!",
+              "display_name":"新建账号资料验证","department_id":1,"phone":"+86 138 0000 0000",
+              "office":"南京总部","avatar_base64":base64.b64encode(image.getvalue()).decode()}
+        response=client.post("/api/v1/admin/users",json=body,headers=headers)
+        response.raise_for_status()
+        user_id=response.json()["user_id"]
+        try:
+            directory=client.get("/api/v1/admin/organization",headers=headers).json()["users"]
+            assert next(row for row in directory if row["id"]==user_id)["has_avatar"] is True
+            avatar=client.get(f"/api/v1/admin/users/{user_id}/avatar",headers=headers)
+            assert avatar.status_code==200
+            assert avatar.headers["content-type"]=="image/webp"
+            hr=sign_in(client,{"email":body["email"],"password":body["password"]})
+            hr.raise_for_status()
+            profile=client.get("/api/v1/auth/profile",headers={"X-Session-Token":hr.json()["token"]})
+            profile.raise_for_status()
+            assert profile.json()["phone"]==body["phone"]
+            assert profile.json()["office"]==body["office"]
+        finally:
+            client.delete(f"/api/v1/admin/users/{user_id}",headers=headers).raise_for_status()

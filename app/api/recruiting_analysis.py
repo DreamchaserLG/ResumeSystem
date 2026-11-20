@@ -379,7 +379,7 @@ def match_snapshot(request, auth, application_id=None):
     # 事实块：counts 服务端统计；per_skill 四态，证据原文供 match 提示词逐字转述
     evidence_by_skill: dict[str, dict] = {}
     if rows:
-        evidence_rows = session_query_evidence(auth,job["id"],selected)
+        evidence_rows = session_query_evidence(auth,job["id"],selected,rows[0]["id"])
         for row in evidence_rows:
             evidence_by_skill.setdefault(row["name"],{"quote":(row["raw_text"] or "").strip(),
                 "record_no":row["record_no"]})
@@ -387,7 +387,7 @@ def match_snapshot(request, auth, application_id=None):
     per_skill, counts = [], {"met":0,"partial":0,"unverified":0,"not_met":0}
     covered = set(matches[0]["hits"]) if matches else set()
     for skill in selected:
-        if skill in covered:
+        if skill in covered and skill in evidence_by_skill:
             status = "met"
         else:
             status = "unverified"
@@ -402,8 +402,8 @@ def match_snapshot(request, auth, application_id=None):
     return report,job,policy
 
 
-def session_query_evidence(auth, job_id, selected):
-    """每个技能取一份已发布简历的原文证据（DISTINCT ON），供逐字转述校验。"""
+def session_query_evidence(auth, job_id, selected, application_id):
+    """只取当前核对申请的原文证据，避免混用其他候选人的简历。"""
     with rls_session(departments=auth.departments,user_id=auth.user_id) as session:
         return session.execute(text(f"""
             SELECT DISTINCT ON (sk.name) sk.name, r.record_no, span.raw_text
@@ -414,10 +414,10 @@ def session_query_evidence(auth, job_id, selected):
             JOIN resume_record r ON r.version_id=k.version_id AND r.record_no=k.record_no
             JOIN resume_evidence_link l ON l.version_id=r.version_id AND l.record_no=r.record_no AND l.field_key='skill.name'
             JOIN resume_source_span span ON span.version_id=l.version_id AND span.span_no=l.span_no
-            WHERE a.active_version_id IS NOT NULL AND a.job_id=:job AND a.deleted_at IS NULL
+            WHERE a.active_version_id IS NOT NULL AND a.job_id=:job AND a.id=:app AND a.deleted_at IS NULL
               AND a.handling_department_id=ANY(CAST(:deps AS bigint[]))
             ORDER BY sk.name,a.id DESC
-        """),{"job":job_id,"skills":[catalog_for(session)[s][0] for s in selected],
+        """),{"job":job_id,"app":application_id,"skills":[catalog_for(session)[s][0] for s in selected],
               "deps":auth.departments}).mappings().all()
 
 
@@ -493,13 +493,58 @@ def match_application(application_id: int, auth: AuthContext = Depends(require_r
 
 def local_summary(report):
     if report["kind"]=="match":
-        count = len(report["skills"])
-        return (f"核心发现：依据 {count} 项可核对技能，按证据检索并排序 {report['reviewed']} 份已发布简历。\n"
-                "后续行动：核对已命中的简历证据，并在人工沟通时确认尚未发现证据的岗位要求。")
+        counts = report["counts"]
+        lines = ["【核对概览】",
+                 f"核对 {report['required_count']} 项岗位要求：{counts['met']} 项有证据，"
+                 f"{counts['partial']} 项部分匹配，{counts['unverified']} 项待核实，"
+                 f"{counts['not_met']} 项不满足。"]
+        evidence = [item for item in report["per_skill"] if item["status"] in ("met","partial") and item.get("evidence")]
+        if evidence:
+            lines += ["【原文证据】"]
+            lines += [f"- {item['skill']}：原文「{item['evidence']['quote'][:110]}」" for item in evidence[:5]]
+        unverified = [item["skill"] for item in report["per_skill"] if item["status"]=="unverified"]
+        if unverified:
+            lines += ["【待核实】", "、".join(unverified)+"：请结合原简历和面试逐项确认。"]
+        lines += ["【人工下一步】","查看右侧数据明细中的候选人列表，并核对原简历；当前未检索到证据不代表候选人不具备相关能力。"]
+        return "\n".join(lines)
     m = report["metrics"]
-    return (f"核心发现：期间新增投递 {m['applications']} 份，首次录取 {m['hired']} 人。"
-            f"当前有 {m['open']} 个招聘中岗位，已设计划的岗位缺口为 {m['gap']} 人。\n"
-            "后续行动：按岗位缺口核对招聘进度，对未设计划人数的岗位先补充计划。")
+    lines = ["【招聘概览】",
+             f"{report['start']} 至 {report['end']} 新增投递 {m['applications']} 份，首次录取 {m['hired']} 人。",
+             f"当前招聘中岗位 {m['open']} 个，已设计划的岗位缺口 {m['gap']} 人。"]
+    focus = report.get("focus")
+    if focus == "趋势":
+        changes = []
+        for fact in report.get("facts", []):
+            if fact.get("key") not in ("applications","hired"):
+                continue
+            diff = (fact.get("delta") or {}).get("diff")
+            if diff is not None:
+                direction = "增加" if diff > 0 else "减少" if diff < 0 else "持平"
+                changes.append(f"{fact['label']}较上期{direction}" +
+                               (f" {abs(diff)} {fact['unit']}" if diff else ""))
+        if changes:
+            lines += ["【趋势重点】","；".join(changes)+"。"]
+    elif focus == "部门":
+        rows = report.get("departments", [])[:5]
+        if rows:
+            lines += ["【部门投递】"]
+            lines += [f"- {row['name']}：新增投递 {row['new_applications']} 份。" for row in rows]
+    elif focus == "缺口":
+        rows = [row for row in report.get("jobs", []) if (row.get("gap") or 0) > 0][:5]
+        if rows:
+            lines += ["【岗位缺口】"]
+            lines += [f"- {row['title']}：计划缺口 {row['gap']} 人。" for row in rows]
+    if report["anomalies"]:
+        lines += ["【岗位与异常】"]
+        lines += ["- "+item["text"] for item in report["anomalies"]]
+    lines += ["【数据限制】",
+              "；".join(item["field"]+"："+item["reason"] for item in report["gaps"]) or "当前快照未列出缺失字段。",
+              "【建议核对】"]
+    if report["anomalies"]:
+        lines.append("优先核对上述岗位的编制计划、投递记录及面试跟进。")
+    else:
+        lines.append("按岗位核对计划人数与当前投递记录。")
+    return "\n".join(lines)
 
 
 def estimate_tokens(text) -> int:
@@ -553,8 +598,9 @@ def analysis(request: AnalysisInput, auth: AuthContext = Depends(require_recruit
             payload = {"question":request.question,"attachments":report.get("texts",[])}
             prompt_text = load_prompt("doc")
         else:
-            payload = {key:value for key,value in report.items()
+            payload = {"question":request.question,**{key:value for key,value in report.items()
                        if key in ("facts","anomalies","breakdown","gaps","window","scope","required_count","counts","per_skill")}
+                       }
             prompt_text = load_prompt("analysis" if kind=="stats" else "match")
         tokens = estimate_tokens(prompt_text+json.dumps(payload,ensure_ascii=False))
         return frame("context",context={"phase":phase,"turn_no":int(ctx.get("turn_no",0))+1,
@@ -583,9 +629,10 @@ def analysis(request: AnalysisInput, auth: AuthContext = Depends(require_recruit
                     data = {"question":request.question,"attachments":report.get("texts",[])}
                 else:
                     prompt_name = "analysis" if kind=="stats" else "match"
-                    data = {key:value for key,value in report.items()
+                    data = {"question":request.question,**{key:value for key,value in report.items()
                             if key in ("facts","anomalies","breakdown","gaps","window","scope","required_count","counts","per_skill")}
-                # 双调用并行：A=原生无参数流式（思考必现，只取思考帧实时转发，保险丝截断）；
+                            }
+                # 双调用并行：A=原生流式思考；B=兼容模式事实校验后的正文。
                 # B=兼容 low 非流式（正文受控）。正文以 B+guard 为准（doc 11 确定性约束不变），
                 # 思考帧是辅助展示、不参与正文校验；A 的正文仅在 B 缺失时兜底。
                 req_b = model_request(load_prompt(prompt_name),data if kind=="doc" else {"facts":data},stream=False)
@@ -600,16 +647,11 @@ def analysis(request: AnalysisInput, auth: AuthContext = Depends(require_recruit
                 thread_b.start()
                 req_a = native_stream_request(load_prompt(prompt_name),data)
                 parts = []
-                thinking_len = 0
                 for channel,text in _stream_chat(req_a,timeout=75):
                     if channel=="content":
                         parts.append(text)
                     else:
                         yield frame("thinking",text=text)
-                        # 保险丝：无参数思考会失控（实测 12k tokens/110s+），约 5k 字符（≈24s）截断
-                        thinking_len += len(text)
-                        if thinking_len > 5000:
-                            break
                 thread_b.join(timeout=90)
                 message = b_result.get("message")
                 summary = (message.get("content") or "").strip() if message else ""

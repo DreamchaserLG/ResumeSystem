@@ -2,11 +2,13 @@
 
 授权变更（grant/revoke）必须 bump_perm_version（02 §3）并写审计。
 """
+import base64
+import binascii
 import re
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -17,6 +19,7 @@ from app.core.integration import PRIVATE_FIELD
 from app.core.resume_pipeline import build_projection, bump_search, insert
 from app.core.workflow import audit, cleanup_files
 from app.core.security import hash_password
+from app.api.profile import MAX_UPLOAD, PRIVATE_HEADERS, avatar_bytes
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -26,6 +29,9 @@ class CreateUserIn(BaseModel):
     email: str = Field(min_length=3,max_length=160)
     password: str = Field(min_length=8,max_length=128)
     department_id: int | None = Field(default=None, gt=0)
+    phone: str = Field(default="", max_length=32)
+    office: str = Field(default="", max_length=80)
+    avatar_base64: str | None = None
 
 
 class GrantIn(BaseModel):
@@ -42,7 +48,21 @@ def create_user(body: CreateUserIn, auth: AuthContext = Depends(require_super_ad
     name, email = body.display_name.strip(), body.email.strip().lower()
     if not name or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
         raise HTTPException(422, "请填写姓名与有效的邮箱")
-    with rls_session(user_id=auth.user_id) as s:
+    phone, office = body.phone.strip(), body.office.strip()
+    if phone and not re.fullmatch(r"[0-9+ ()\-]{3,32}", phone):
+        raise HTTPException(422, "工作电话只能包含数字、空格和 + ( ) -。")
+    image = None
+    if body.avatar_base64:
+        if len(body.avatar_base64) > (MAX_UPLOAD * 4 // 3 + 8):
+            raise HTTPException(413, "头像不能超过 2 MB。")
+        try:
+            raw = base64.b64decode(body.avatar_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(422, "头像数据无效。") from exc
+        if len(raw) > MAX_UPLOAD:
+            raise HTTPException(413, "头像不能超过 2 MB。")
+        image = avatar_bytes(raw)
+    with owner_engine.begin() as s:
         if body.department_id is not None and not s.execute(text(
             "SELECT 1 FROM department WHERE id=:d AND status='active' FOR SHARE"
         ), {"d": body.department_id}).first():
@@ -53,6 +73,10 @@ def create_user(body: CreateUserIn, auth: AuthContext = Depends(require_super_ad
         """), {"name": name, "email": email, "password": hash_password(body.password)}).scalar_one_or_none()
         if new_id is None:
             raise HTTPException(409, "邮箱已存在")
+        s.execute(text("""
+            INSERT INTO user_profile(user_id,phone,office,avatar_webp)
+            VALUES(:id,:phone,:office,:avatar)
+        """), {"id":new_id,"phone":phone,"office":office,"avatar":image})
         audit(s, auth.user_id, "user_create", new_id, target_type="user")
         if body.department_id is not None:
             s.execute(text("""
@@ -60,6 +84,18 @@ def create_user(body: CreateUserIn, auth: AuthContext = Depends(require_super_ad
             """), {"d": body.department_id, "u": new_id, "actor": auth.user_id})
             audit(s, auth.user_id, "permission_grant", new_id, {"department_id": body.department_id}, "user")
     return {"user_id": new_id, "department_id": body.department_id}
+
+
+@router.get("/users/{user_id}/avatar")
+def managed_user_avatar(user_id: int, auth: AuthContext = Depends(require_super_admin)):
+    with owner_engine.connect() as s:
+        data = s.execute(text("""
+            SELECT p.avatar_webp FROM user_profile p JOIN app_user u ON u.id=p.user_id
+            WHERE u.id=:id AND u.status<>'deleted'
+        """), {"id":user_id}).scalar_one_or_none()
+    if data is None:
+        raise HTTPException(404, "尚未设置头像")
+    return Response(data, media_type="image/webp", headers=PRIVATE_HEADERS)
 
 
 def _lock_managed_account(connection, auth, user_id):
@@ -240,7 +276,7 @@ def settings(auth: AuthContext = Depends(require_super_admin)):
 
 @router.get("/organization")
 def organization(auth: AuthContext = Depends(require_super_admin)):
-    with rls_session(user_id=auth.user_id) as s:
+    with owner_engine.connect() as s:
         queries = {
             "companies": "SELECT id,name,parent_id FROM recruiting_company ORDER BY parent_id NULLS FIRST,name,id",
             "departments": """
@@ -249,6 +285,7 @@ def organization(auth: AuthContext = Depends(require_super_admin)):
             """,
             "users": """
                 SELECT u.id,u.display_name,u.email,u.status,(sa.user_id IS NOT NULL) AS super_admin,
+                    EXISTS(SELECT 1 FROM user_profile p WHERE p.user_id=u.id AND p.avatar_webp IS NOT NULL) AS has_avatar,
                     ARRAY(SELECT d.department_id FROM department_admin d WHERE d.user_id=u.id ORDER BY d.department_id) AS departments
                 FROM app_user u LEFT JOIN system_admin sa ON sa.user_id=u.id
                 WHERE u.status<>'deleted'

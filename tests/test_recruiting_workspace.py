@@ -57,14 +57,15 @@ def test_workspace_resume_roundtrip_and_analysis(monkeypatch):
             # match 事实块：结构句计数取自 counts，证据句逐字取 quote
             block = data["facts"]
             counts = block["counts"]
-            lines = [f"核对 {block['required_count']} 项要求：{counts['met']} 项有证据，"
+            lines = ["【核对概览】",f"核对 {block['required_count']} 项要求：{counts['met']} 项有证据，"
                      f"{counts['partial']} 项部分匹配，{counts['unverified']} 项待核实，{counts['not_met']} 项不满足。"]
-            quotes = [row["evidence"]["quote"] for row in block.get("per_skill", []) if row.get("evidence")]
-            if quotes:
-                lines.append("证据：" + "；".join(quotes[:2]) + "。")
+            evidenced = [row for row in block.get("per_skill", []) if row.get("evidence")]
+            if evidenced:
+                lines.append("【原文证据】")
+                lines.extend(f"- {row['skill']}：原文「{row['evidence']['quote']}」" for row in evidenced[:2])
             pending = [row["skill"] for row in block.get("per_skill", []) if row["status"]=="unverified"]
             if pending:
-                lines.append("待核实：" + "、".join(pending[:3]) + "。")
+                lines.extend(["【待核实】","、".join(pending[:3]) + "：需结合原简历核对。"])
             content = "\n".join(lines)
         else:
             content = json.dumps({"skills":["Python","unknown"]})
@@ -76,7 +77,7 @@ def test_workspace_resume_roundtrip_and_analysis(monkeypatch):
             for part in (content[:half],content[half:]):
                 if part:
                     frames.append('data:'+json.dumps({"output":{"choices":[{"message":{"content":part,"reasoning_content":"","role":"assistant"},"finish_reason":"null"}]}},ensure_ascii=False))
-            return BytesIO("\n".join(frames)+"\n")
+            return BytesIO(("\n".join(frames)+"\n").encode())
         result = {"choices":[{"message":{"content":content}}]}
         return BytesIO(json.dumps(result).encode())
 
@@ -159,7 +160,7 @@ def test_workspace_resume_roundtrip_and_analysis(monkeypatch):
             assert report.status_code==200,report.text
             frames=[json.loads(line) for line in report.text.splitlines()]
             assert frames[0]["model"] == "glm-5.3"
-            assert "internal" not in report.text
+            assert [frame["text"] for frame in frames if frame["event"]=="thinking"]==["internal","check"]
             assert frames[0]["report"]["metrics"]["applications"]==2
             assert frames[-1]=={"event":"done","source":"llm"}
             matches=client.post("/api/v1/workspace/analysis",headers=hr,json={

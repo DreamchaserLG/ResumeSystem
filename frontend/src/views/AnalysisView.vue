@@ -1,17 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ArrowUpOutline, AddOutline, AlertCircleOutline, ChevronForwardOutline, CloseOutline, CopyOutline, DocumentOutline, DownloadOutline, HourglassOutline, RefreshOutline, ShareSocialOutline, SparklesOutline, StatsChartOutline, ThumbsDownOutline, ThumbsUpOutline, TimeOutline, TrashOutline, VolumeHighOutline } from '@vicons/ionicons5'
 import { ElButton, ElDrawer, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { jobDirectory, pollAttachment, runAnalysis, uploadAttachment, type AnalysisAttachment, type AnalysisContext, type AnalysisRequest, type JobDirectory, type Report } from '@/api/recruiting'
 import { useAuthStore } from '@/stores/auth'
 import { useAnalysisHistory, type AnalysisHistoryItem } from '@/stores/analysisHistory'
 import ContextRing from '@/components/ContextRing.vue'
+import AnalysisHistoryPanel from '@/components/AnalysisHistoryPanel.vue'
 
-type Entry = {id:number;question:string;request:AnalysisRequest;summary:string;report?:Report;source?:'llm'|'rules';configured?:boolean;model?:string|null;error?:string;context?:AnalysisContext;historyId?:string;fromHistory?:boolean;finishedAt?:number;thinking?:string;thinkingOpen?:boolean;thinkingPinned?:boolean;liked?:number;fileNames?:string[]}
+type Entry = {id:number;question:string;request:AnalysisRequest;summary:string;report?:Report;source?:'llm'|'rules';configured?:boolean;model?:string|null;error?:string;context?:AnalysisContext;historyId?:string;fromHistory?:boolean;finishedAt?:number;thinking?:string;thinkingOpen?:boolean;liked?:number;fileNames?:string[]}
 const route=useRoute()
+const router=useRouter()
 const auth=useAuthStore()
 const history=useAnalysisHistory()
+const mobileHistoryOpen=ref(false)
 const directory=ref<JobDirectory>({items:[],departments:[],companies:[]})
 const question=ref('')
 const department=ref<number>()
@@ -56,12 +59,29 @@ const metrics=computed(()=>drawerStats.value ? [
   {label:'计划缺口',value:drawerStats.value.metrics.gap,unit:'人'},
   ...(drawerStats.value.metrics.interviews===null ? [] : [{label:'已记录面试安排',value:drawerStats.value.metrics.interviews,unit:'份申请'}]),
 ] : [])
+function titleFromQuestion(text:string) {
+  const clean=text.trim().replace(/^(请|麻烦|帮我|请帮我|能否|可以)?(分析一下|分析|看看|查询一下|查询|告诉我)/,'')
+    .replace(/[？?。！!，,]+$/,'').trim() || text.trim()
+  return clean.length>24?clean.slice(0,24)+'…':clean
+}
+function titleFromConversation(question:string,answer:string) {
+  const subject=titleFromQuestion(question)
+  if(subject.length>=5) return subject
+  const first=answer.split('\n').map(line=>line.replace(/^[-•]?\s*[FA]\d+：/,'').trim())
+    .find(line=>line && !/^【/.test(line)) || subject
+  return first.length>24?first.slice(0,24)+'…':first
+}
+const currentHistoryId=computed(()=>entries.value.find(entry=>entry.historyId)?.historyId || String(route.query.h || ''))
 const conversationTitle=computed(()=>{
   const first=entries.value[0]
-  if(!first) return '新对话'
-  const text=first.question.trim()
-  return text.length>34 ? text.slice(0,34)+'…' : text
+  if(!first) return ''
+  return history.find(currentHistoryId.value)?.title || titleFromConversation(first.question,first.summary)
 })
+function answerLines(summary:string) {
+  return summary.split('\n').map(text=>text.trim()).filter(Boolean).map(text=>({
+    text,kind:/^【[^】]+】$/.test(text)?'heading':/^[-•]\s*/.test(text)?'bullet':'body',
+  }))
+}
 const scopeLabel=computed(()=>{
   const name=auth.isSuperAdmin?departmentName(department.value):''
   const parts=[name,selectedJob.value?.title].filter(Boolean)
@@ -94,7 +114,6 @@ function sourceLabel(entry:Entry) {
 }
 function toggleThinking(entry:Entry) {
   entry.thinkingOpen=!entry.thinkingOpen
-  entry.thinkingPinned=true
 }
 function thinkingLabel(entry:Entry) {
   const busy=loading.value && entry.id===activeId.value && !entry.summary && !entry.error && !entry.finishedAt
@@ -220,14 +239,11 @@ async function ask(preset?:string, reuse=false) {
         stored.report=event.report;stored.configured=event.model_configured;stored.model=event.model
         if(activeId.value===id) activate(stored)
       } else if(event.event==='thinking'){
-        /* 原生协议真流式：思考帧逐帧追加，滚动跟随。 */
+        /* 原生协议真流式：思考帧逐帧追加，完整内容随对话页滚动。 */
         if(stored.thinking===undefined){stored.thinking='';stored.thinkingOpen=true}
         stored.thinking+=event.text
-        void nextTick(()=>{const box=document.getElementById('think-'+id);if(box) box.scrollTop=box.scrollHeight})
       } else if(event.event==='delta'){
         stored.summary+=event.text
-        /* 正文下发即收起思考块；用户手动展开过则保持。 */
-        if(!stored.thinkingPinned) stored.thinkingOpen=false
       }
       else if(event.event==='reset'){stored.summary='';stored.source=undefined}
       else if(event.event==='context') stored.context=event.context
@@ -235,14 +251,17 @@ async function ask(preset?:string, reuse=false) {
         stored.source=event.source
         stored.finishedAt=Date.now()
         if(stored.context) stored.context.phase='done'
-        if(!stored.thinkingPinned) stored.thinkingOpen=false
         if(!reuse && stored.summary) {
-          /* 续接历史会话时只更新原条目，避免侧边栏不断长出新对话。 */
-          const resumed=entries.value.find(item=>item.fromHistory && item.historyId)?.historyId
-          if(resumed) history.touch(resumed,stored.summary,event.source)
-          else if(!stored.historyId) {
+          const turn={question:stored.question,summary:stored.summary,thinking:stored.thinking,
+            source:event.source,at:stored.finishedAt,fileNames:stored.fileNames}
+          const resumed=entries.value.find(item=>item.id!==id && item.historyId)?.historyId
+          if(resumed) {
+            history.appendTurn(resumed,turn)
+            stored.historyId=resumed
+          } else if(!stored.historyId) {
             const saved=history.add({
-              question:stored.question, summary:stored.summary, source:event.source,
+              question:stored.question, title:titleFromConversation(stored.question,stored.summary), summary:stored.summary, source:event.source,
+              turns:[turn],
               departmentId:auth.isSuperAdmin?request.department_id:undefined,
               departmentName:scopeDepartmentName,
               jobId:request.job_id, jobTitle:scopeJobTitle,
@@ -265,21 +284,23 @@ async function ask(preset?:string, reuse=false) {
 }
 watch(()=>active.value?.summary,()=>{void nextTick(()=>streamEnd.value?.scrollIntoView({block:'nearest'}))})
 
-/* 侧边栏历史对话：通过 ?h=<id> 选中，仅回显问题与结论（报表明细需重新询问才能重算）。 */
+/* 主体左侧历史对话：通过 ?h=<id> 选中，仅回显问题与结论。 */
 watch(()=>route.query.h,id=>{
+  mobileHistoryOpen.value=false
   const key=String(id ?? '')
   if(!key) return
   const item=history.find(key)
   if(item) showHistory(item)
 },{immediate:true})
 function showHistory(item:AnalysisHistoryItem) {
-  const entry:Entry={
-    id:++sequence, question:item.question, summary:item.summary, source:item.source,
-    configured:true, fromHistory:true, historyId:item.id, finishedAt:item.at,
-    request:{question:item.question,days:30},
-  }
-  entries.value=[entry]
-  activate(entry)
+  const turns=item.turns?.length?item.turns:[{question:item.question,summary:item.summary,source:item.source,at:item.at}]
+  entries.value=turns.map(turn=>({
+    id:++sequence, question:turn.question, summary:turn.summary, source:turn.source,
+    configured:true, fromHistory:true, historyId:item.id, finishedAt:turn.at,
+    thinking:turn.thinking, thinkingOpen:Boolean(turn.thinking), fileNames:turn.fileNames,
+    request:{question:turn.question,days:30},
+  }))
+  activate(entries.value[entries.value.length-1])
   if(auth.isSuperAdmin && item.departmentId) department.value=item.departmentId
   else if(!auth.isSuperAdmin) department.value=undefined
   job.value=item.jobId
@@ -330,7 +351,7 @@ function resetChat() {
   activeId.value=undefined
   drawerOpen.value=false
   resetMemory()
-  if(route.query.h) window.history.replaceState(null,'',route.path)
+  if(route.query.h) void router.replace({name:'analysis'})
 }
 function chatMarkdown() {
   const lines=['# '+conversationTitle.value,'']
@@ -388,10 +409,16 @@ function download() {
 
 <template>
   <main class="hire-page analysis-page" aria-label="AI 招聘分析">
-    <header class="analysis-topbar">
+    <AnalysisHistoryPanel :current-id="currentHistoryId" :class="{'mobile-open':mobileHistoryOpen}"
+      @new-chat="resetChat();mobileHistoryOpen=false"/>
+    <button v-if="mobileHistoryOpen" type="button" class="history-scrim" aria-label="关闭历史对话" @click="mobileHistoryOpen=false"></button>
+    <section class="analysis-conversation" aria-label="当前对话">
+    <button v-if="!entries.length" type="button" class="mobile-history-toggle empty-toggle" @click="mobileHistoryOpen=!mobileHistoryOpen">历史对话</button>
+    <header v-if="entries.length" class="analysis-topbar">
+      <button type="button" class="mobile-history-toggle" @click="mobileHistoryOpen=!mobileHistoryOpen">历史对话</button>
       <div class="topbar-title">
         <h1>{{ conversationTitle }}</h1>
-        <small v-if="entries.length">{{ entries.length }} 条对话{{ scopeLabel ? ' · ' + scopeLabel : '' }}</small>
+        <small>{{ entries.length }} 轮对话{{ scopeLabel ? ' · ' + scopeLabel : '' }}</small>
       </div>
       <div class="topbar-actions">
         <button type="button" title="分享对话" aria-label="分享对话" :disabled="!entries.length" @click="share"><ShareSocialOutline aria-hidden="true"/></button>
@@ -400,7 +427,7 @@ function download() {
       </div>
     </header>
 
-    <div class="analysis-body">
+    <div class="analysis-body" :class="{'no-rail':!entries.length}">
       <div class="analysis-stream" :class="{empty:!entries.length}">
         <div v-if="!entries.length" class="chat-hero">
           <span class="hero-icon" aria-hidden="true"><SparklesOutline/></span>
@@ -429,7 +456,9 @@ function download() {
                 <pre v-show="entry.thinkingOpen" :id="'think-'+entry.id" class="think-body" tabindex="-1">{{ entry.thinking }}</pre>
               </div>
               <p v-if="entry.error" class="hire-error">{{ entry.error }}</p>
-              <p v-else-if="entry.summary" class="chat-summary">{{ entry.summary }}</p>
+              <div v-else-if="entry.summary" class="chat-summary">
+                <p v-for="(line,index) in answerLines(entry.summary)" :key="index" :class="'answer-'+line.kind">{{ line.text }}</p>
+              </div>
               <p v-else class="chat-status" role="status"><TimeOutline aria-hidden="true"/>
                 {{ !entry.report?(entry.request.attachment_ids?.length?'正在解析并读取附件…':'正在查询招聘数据…'):(entry.report.kind==='doc'?'附件已读取，正在生成回答…':'证据已加载，正在生成总结…') }}</p>
               <div v-if="entry.report || entry.fromHistory || entry.summary" class="chat-actions">
@@ -469,10 +498,10 @@ function download() {
         <span ref="streamEnd" aria-hidden="true"></span>
       </div>
 
-      <nav v-if="entries.length>4" class="chat-rail" aria-label="对话索引">
+      <nav v-if="entries.length" class="chat-rail" aria-label="对话索引">
         <button v-for="entry in entries" :key="'rail-'+entry.id" type="button"
           :aria-current="entry.id===activeId?'true':undefined" :aria-label="entry.question" :title="entry.question"
-          @click="jumpTo(entry.id)"></button>
+          @click="jumpTo(entry.id)"><span>{{ titleFromQuestion(entry.question) }}</span></button>
       </nav>
     </div>
 
@@ -519,6 +548,7 @@ function download() {
       </div>
       <p class="composer-hint">Ctrl + Enter 发送 · 支持拖拽 PDF / Word / 图片到输入框提问</p>
     </div>
+    </section>
 
     <ElDrawer v-model="drawerOpen" size="min(560px, 92vw)" direction="rtl" :with-header="false">
       <div v-if="drawerEntry" class="drawer-body">
@@ -610,8 +640,12 @@ function download() {
 </template>
 
 <style scoped>
-.analysis-page{padding:0;height:100%;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
-.analysis-topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px max(18px,calc((100% - 860px) / 2));border-bottom:1px solid var(--hire-line);background:rgba(255,255,255,.72)}
+.analysis-page{padding:0;height:100%;min-height:0;display:grid;grid-template-columns:252px minmax(0,1fr);grid-template-rows:minmax(0,1fr);background:#fff}
+.analysis-conversation{position:relative;min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+.mobile-history-toggle{display:none}
+.history-scrim{display:none}
+.analysis-topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 24px;border-bottom:1px solid #eef1f2;background:#fff}
+.analysis-topbar{grid-row:1}
 .topbar-title{min-width:0}
 .topbar-title h1{overflow:hidden;color:#1b3a41;font-size:15px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
 .topbar-title small{display:block;margin-top:2px;color:var(--hire-muted);font-size:11.5px}
@@ -620,8 +654,10 @@ function download() {
 .topbar-actions button svg{width:16px;height:16px}
 .topbar-actions button:hover{background:var(--hire-soft);border-color:#cfe4e0;color:var(--hire-accent-dark)}
 .topbar-actions button:disabled{opacity:.4;cursor:not-allowed}
-.analysis-body{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 30px}
-.analysis-stream{overflow:auto;padding:24px max(18px,calc((100% - 780px) / 2)) 10px;display:grid;align-content:start;gap:18px;scrollbar-width:thin}
+.analysis-body{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 145px}
+.analysis-body{grid-row:2}
+.analysis-body.no-rail{grid-template-columns:minmax(0,1fr)}
+.analysis-stream{overflow:auto;padding:26px max(20px,calc((100% - 880px) / 2)) 12px;display:grid;align-content:start;gap:22px;scrollbar-width:thin}
 .analysis-stream.empty{place-content:center;justify-items:center;text-align:center}
 .chat-hero{display:grid;justify-items:center;gap:11px;max-width:620px;padding:20px 8px}
 .hero-icon{width:52px;height:52px;border-radius:15px;display:grid;place-items:center;background:var(--hire-soft);color:var(--hire-accent-dark)}
@@ -633,22 +669,24 @@ function download() {
 .hero-prompts button svg{width:14px;height:14px;color:var(--hire-accent);flex:none;transform:rotate(45deg)}
 .hero-prompts button:hover{border-color:#9fcfc7;background:var(--hire-soft);transform:translateY(-2px)}
 .chat-msg{display:grid;gap:9px;scroll-margin-top:12px}
-.chat-bubble{max-width:min(720px,88%);border-radius:14px;padding:11px 15px;font-size:13.5px;line-height:1.72;overflow-wrap:anywhere}
+.chat-bubble{max-width:min(880px,94%);border-radius:14px;padding:11px 15px;font-size:13.5px;line-height:1.76;overflow-wrap:anywhere}
 .chat-bubble.user{justify-self:end;background:#e8f5f2;color:#26494f;border-bottom-right-radius:4px}
 .user-files{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
 .user-file{display:inline-flex;align-items:center;gap:4px;max-width:220px;padding:2px 7px;border-radius:6px;background:rgba(255,255,255,.7);font-size:11px;color:#3d6360;overflow:hidden}
 .user-file svg{width:11px;height:11px;flex:none}
 .user-file{white-space:nowrap;text-overflow:ellipsis}
-.chat-bubble.ai{justify-self:start;background:transparent;color:#2f4d4c;padding:2px 2px 0;border-radius:0}
-.chat-summary{white-space:pre-wrap}
+.chat-bubble.ai{justify-self:stretch;max-width:none;background:transparent;color:#2f4d4c;padding:2px 2px 0;border-radius:0}
+.chat-summary{display:grid;gap:9px;font-size:14px;line-height:1.82;white-space:pre-wrap}
+.chat-summary .answer-heading{margin-top:8px;font-weight:700;color:#214b51;font-size:14px}
+.chat-summary .answer-bullet{padding-left:13px;border-left:2px solid #d5e9e3;color:#3a555a}
 .chat-status{display:flex;align-items:center;gap:6px;color:var(--hire-muted);font-size:12.5px}
 .chat-status svg{width:14px;height:14px}
-.think-block{margin-bottom:7px}
-.think-head{display:inline-flex;align-items:center;gap:5px;padding:2px 0;border:0;background:transparent;color:#8ba0a6;font:inherit;font-size:12px;font-style:italic;cursor:pointer;transition:color var(--rs-motion-fast)}
+.think-block{margin:14px 0 18px}
+.think-head{display:inline-flex;align-items:center;gap:7px;padding:4px 0;border:0;background:transparent;color:#547178;font:inherit;font-size:12.5px;cursor:pointer;transition:color var(--rs-motion-fast)}
 .think-head svg{width:12px;height:12px;flex:none;transition:transform var(--rs-motion-fast)}
 .think-head[aria-expanded=true] svg{transform:rotate(90deg)}
 .think-head:hover{color:var(--hire-accent-dark)}
-.think-body{margin:5px 0 0;max-height:190px;overflow:auto;white-space:pre-wrap;color:#8ba0a6;font-family:inherit;font-style:italic;font-size:12px;line-height:1.7;background:#f7fbfa;border-inline-start:2px solid #dcebe8;border-radius:0 8px 8px 0;padding:8px 11px;scrollbar-width:thin}
+.think-body{margin:8px 0 0 5px;max-height:none;overflow:visible;white-space:pre-wrap;color:#768c91;font-family:inherit;font-size:12.5px;line-height:1.8;background:transparent;border-inline-start:1px solid #d9e6e6;border-radius:0;padding:4px 0 6px 16px}
 .chat-actions{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
 .chat-report-link{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid #cfe5e1;border-radius:7px;background:#f4faf9;color:var(--hire-accent-dark);font:inherit;font-size:12px;cursor:pointer;transition:border-color var(--rs-motion-fast),background-color var(--rs-motion-fast)}
 .chat-report-link svg{width:13px;height:13px}
@@ -663,15 +701,17 @@ function download() {
 .tool:hover{background:#f0f7f5;color:var(--hire-accent-dark)}
 .tool.on{background:#e2f3ee;color:var(--hire-accent-dark)}
 .tool:disabled{opacity:.4;cursor:not-allowed}
-/* 对话索引条：>4 条才出现；无分隔竖线；默认小、hover 放大（近大远小）。 */
-.chat-rail{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:3px;padding:16px 12px 16px 4px;overflow:hidden}
-.chat-rail button{width:auto;height:14px;padding:4px 0 4px 2px;border:0;background:transparent;cursor:pointer}
-.chat-rail button::after{content:'';display:block;width:9px;height:2px;border-radius:2px;background:#cbdad8;opacity:.55;transition:width .18s var(--rs-ease,ease),height .18s,opacity .18s,background-color .18s}
-.chat-rail:hover button::after{width:14px;opacity:.8}
-.chat-rail button:hover::after{width:24px;height:3px;opacity:1;background:var(--hire-accent)}
-.chat-rail button[aria-current=true]::after{background:var(--hire-accent);opacity:.95}
-.chat-rail button:focus-visible::after{background:var(--hire-accent-dark);box-shadow:0 0 0 2px rgba(13,137,126,.18)}
-.analysis-composer{padding:10px max(18px,calc((100% - 780px) / 2)) 18px}
+/* 右侧对话定位线与问题摘要。 */
+.chat-rail{position:relative;display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:3px;padding:18px 10px 18px 12px;overflow:auto;scrollbar-width:none}
+.chat-rail::before{content:'';position:absolute;left:7px;top:20px;bottom:20px;border-left:1px dashed #d2dddf}
+.chat-rail button{position:relative;min-width:0;min-height:28px;padding:5px 4px 5px 9px;border:0;background:transparent;color:#91a0a4;text-align:right;font:inherit;font-size:11px;cursor:pointer}
+.chat-rail button::before{content:'';position:absolute;left:-5px;top:50%;width:8px;border-top:2px solid #c8d7d7}
+.chat-rail button[aria-current=true]{color:var(--hire-accent-dark);font-weight:650}
+.chat-rail button[aria-current=true]::before{border-color:var(--hire-accent);width:12px}
+.chat-rail button:hover{color:#315f60}
+.chat-rail button span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.analysis-composer{padding:10px max(20px,calc((100% - 880px) / 2)) 18px}
+.analysis-composer{grid-row:3}
 .composer-notice{margin:0 0 6px;color:var(--hire-accent-dark);font-size:12px;text-align:center}
 .attach-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:7px}
 .attach-chip{display:inline-flex;align-items:center;gap:5px;max-width:250px;padding:4px 7px;border:1px solid var(--hire-line);border-radius:8px;background:#fff;font-size:11.5px;color:#33505a}
@@ -738,6 +778,12 @@ function download() {
 .doc-item svg{width:13px;height:13px;color:var(--hire-accent)}
 .doc-item small{color:var(--hire-muted);font-size:11px}
 @media(max-width:760px){
+  .analysis-page{grid-template-columns:minmax(0,1fr)}
+  .analysis-history{display:none;position:absolute;z-index:12;inset:0 auto 0 0;width:min(280px,calc(100% - 28px));box-shadow:12px 0 30px rgba(20,52,60,.14)}
+  .analysis-history.mobile-open{display:grid}
+  .history-scrim{display:block;position:absolute;z-index:11;inset:0;border:0;background:rgba(19,49,53,.22)}
+  .mobile-history-toggle{display:inline-flex;align-items:center;flex:none;padding:6px 9px;border:1px solid #d5e8e4;border-radius:7px;background:#fff;color:var(--hire-accent-dark);font:inherit;font-size:11px;cursor:pointer}
+  .mobile-history-toggle.empty-toggle{position:absolute;z-index:3;top:12px;left:12px}
   .analysis-topbar{padding:9px 14px}
   .analysis-stream{padding:18px 14px 8px}
   .analysis-composer{padding:8px 14px 14px}

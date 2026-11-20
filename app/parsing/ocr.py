@@ -6,38 +6,56 @@ photo 检测默认走版面先验 + 人脸判定（photo_detect），版面区�
 """
 import os
 import threading
+import logging
 
 from app.parsing.reading_order import by_columns
 
 _lock = threading.Lock()
 _ocr = None
+_ocr_kind = "paddle"
+_layout_unavailable = False
+logger = logging.getLogger(__name__)
 
 DISABLE_MODEL_SOURCE_CHECK = True  # 跳过 paddle 对外网模型源的连通性检查
 
 
 def _get_ocr():
-    global _ocr
+    global _ocr, _ocr_kind
     if _ocr is None:
         with _lock:
             if _ocr is None:
                 os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
-                from paddleocr import PaddleOCR
+                try:
+                    from paddleocr import PaddleOCR
 
-                _ocr = PaddleOCR(
-                    text_recognition_model_name="PP-OCRv5_server_rec",
-                    use_doc_orientation_classify=False,
-                    use_doc_unwarping=False,
-                    use_textline_orientation=False,
-                )
+                    _ocr = PaddleOCR(
+                        text_recognition_model_name="PP-OCRv5_server_rec",
+                        use_doc_orientation_classify=False,
+                        use_doc_unwarping=False,
+                        use_textline_orientation=False,
+                    )
+                except (ImportError, ModuleNotFoundError):
+                    from rapidocr import RapidOCR
+
+                    _ocr = RapidOCR()
+                    _ocr_kind = "rapid"
+                    logger.info("PaddleOCR unavailable; using RapidOCR ONNX fallback")
     return _ocr
 
 
 def ocr_page(image_path: str) -> dict:
     """识别单页：返回 {"lines": [{"text","score","bbox"}], "page_w","page_h"}。"""
-    r = _get_ocr().predict(image_path)[0]
-    texts = r["rec_texts"]
-    scores = r["rec_scores"]
-    polys = r["rec_polys"]
+    engine = _get_ocr()
+    if _ocr_kind == "rapid":
+        result = engine(image_path)
+        texts = list(result.txts) if result.txts is not None else []
+        scores = list(result.scores) if result.scores is not None else []
+        polys = list(result.boxes) if result.boxes is not None else []
+    else:
+        r = engine.predict(image_path)[0]
+        texts = r["rec_texts"]
+        scores = r["rec_scores"]
+        polys = r["rec_polys"]
     lines = []
     for text, score, poly in zip(texts, scores, polys):
         xs = [float(p[0]) for p in poly]
@@ -78,14 +96,21 @@ def get_layout_regions(image_path: str) -> list[dict]:
     独立模型（PP-DocLayout_plus-L），不引入 PPStructureV3 全家桶。
     首次调用下载权重至 ~/.paddlex。
     """
-    global _layout_model
+    global _layout_model, _layout_unavailable
+    if _layout_unavailable:
+        return []
     if _layout_model is None:
         with _layout_lock:
-            if _layout_model is None:
-                os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
-                from paddlex import create_model
+            if _layout_model is None and not _layout_unavailable:
+                try:
+                    os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
+                    from paddlex import create_model
 
-                _layout_model = create_model("PP-DocLayout_plus-L")
+                    _layout_model = create_model("PP-DocLayout_plus-L")
+                except (ImportError, ModuleNotFoundError, OSError, RuntimeError):
+                    _layout_unavailable = True
+                    logger.warning("PaddleX layout model unavailable; using OCR and geometry fallback")
+                    return []
     results = list(_layout_model.predict(image_path))
     r0 = results[0]
     boxes = r0["boxes"] if isinstance(r0, dict) and "boxes" in r0 else getattr(r0, "boxes", [])

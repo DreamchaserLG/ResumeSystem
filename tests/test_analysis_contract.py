@@ -60,6 +60,7 @@ def patched_stats(monkeypatch):
                         {"id": "F2", "key": "hired", "label": "首次录取", "v": 3, "unit": "人", "delta": {"prev": 3, "diff": 0}}],
               "anomalies": [], "breakdown": [], "gaps": [{"field": "channel", "reason": "指标未接入"}]}
     monkeypatch.setattr(module, "stats_snapshot", lambda request, auth: report)
+    monkeypatch.setattr(module, "model_enabled", lambda: True)
     return module, report
 
 

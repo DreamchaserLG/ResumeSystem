@@ -6,8 +6,10 @@
 普通图形（logo/图标/盖章）→ 不产生 photo span，仅版面元数据。
 """
 import io
+import logging
 import os
 import threading
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -17,17 +19,25 @@ from app.parsing.ir import Span
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "yunet.onnx")
 _det_obj = None
+_det_unavailable = False
 _lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 def _detector():
-    global _det_obj
-    if _det_obj is None:
+    global _det_obj, _det_unavailable
+    if _det_obj is None and not _det_unavailable:
         with _lock:
-            if _det_obj is None:
-                _det_obj = cv2.FaceDetectorYN.create(
-                    MODEL_PATH, "", (320, 320), score_threshold=0.6
-                )
+            if _det_obj is None and not _det_unavailable:
+                try:
+                    # OpenCV's Windows path loader cannot reliably open non-ASCII paths.
+                    # The in-memory overload reads the bundled model regardless of cwd.
+                    _det_obj = cv2.FaceDetectorYN.create(
+                        "onnx", Path(MODEL_PATH).read_bytes(), b"", (320, 320), score_threshold=0.6
+                    )
+                except (OSError, cv2.error):
+                    _det_unavailable = True
+                    logger.warning("YuNet face detector unavailable; using layout photo detection")
     return _det_obj
 
 
@@ -110,6 +120,8 @@ def _detect_face(img: Image.Image, bbox: tuple[int, int, int, int]) -> bool:
     if w < 24 or h < 24:
         return False
     det = _detector()
+    if det is None:
+        return False
     det.setInputSize((w, h))
     _, faces = det.detect(bgr)
     return faces is not None and len(faces) > 0

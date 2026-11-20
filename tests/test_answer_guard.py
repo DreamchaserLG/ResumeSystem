@@ -61,7 +61,7 @@ def test_duplicate_fact_id():
 
 
 def test_stats_too_long():
-    text = "F1：" + "很长的陈述" * 80
+    text = "F1：" + "很长的陈述" * 200
     assert any(problem.startswith("too_long") for problem in check(text, STATS_FACTS))
 
 

@@ -13,6 +13,9 @@ node_modules/
 .pnpm-store/
 dist/
 *.tsbuildinfo
+# 演示数据集：只发布表格映射到的 403 份，通用/ 不入库也不上传
+/resume/通用/
+
 /storage/
 /data/
 /eval/m3_report.json

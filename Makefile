@@ -1,4 +1,4 @@
-.PHONY: help up down build migrate seed api worker-logs test lint frontend frontend-install
+.PHONY: help up down build migrate seed api worker-logs test lint frontend frontend-install showcase showcase-verify showcase-dump
 
 help: ## 显示可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -40,3 +40,19 @@ prompt-eval: ## 提示词质量回归（需 RECRUITING_LLM_KEY）
 
 logs: ## 查看 API 与 worker 日志
 	docker compose logs -f api worker
+
+SHOWCASE_DB ?= resume_showcase
+
+showcase: ## 载入演示数据集（403 份简历 + 已解析结果）并启动，数据落在 resume_showcase
+	docker compose build api
+	docker compose up -d --wait pg redis
+	cd frontend && npm ci --no-audit --no-fund && npm run build
+	POSTGRES_DB=$(SHOWCASE_DB) STORAGE_DIR=./showcase/storage docker compose run --rm --no-deps api python scripts/showcase_dataset.py restore
+	POSTGRES_DB=$(SHOWCASE_DB) STORAGE_DIR=./showcase/storage docker compose up -d
+
+showcase-verify: ## 核对演示数据：部门、岗位、每岗份数与发布状态
+	python scripts/showcase_dataset.py verify
+
+showcase-dump: ## 从当前展示库重新导出 db/showcase.sql.gz
+	python scripts/showcase_dataset.py dump
+

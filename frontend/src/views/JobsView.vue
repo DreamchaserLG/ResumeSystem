@@ -8,6 +8,7 @@ import { dateLabel, jobStatusLabel, jobStatusOptions, type Job } from '@/api/hr'
 import { jobDirectory, type JobDirectory, type JobImportStatus } from '@/api/recruiting'
 import FilePickerZone from '@/components/FilePickerZone.vue'
 import { useAuthStore } from '@/stores/auth'
+import showcasePlan from '@/data/showcasePlan.json'
 
 type Node = { key:string; title:string; kind:'company'|'department'|'job'; departmentId?:number; job?:Job; children?:Node[] }
 const auth = useAuthStore()
@@ -19,7 +20,11 @@ const status = ref('')
 const kind = ref('')
 const processType = ref('')
 const page = ref(1)
-const pageSize = ref(12)
+const pageSize = ref(50)
+const resumeSources = new Map(showcasePlan.jobs.map(item=>[
+  item.department + '\u0000' + item.title,
+  item.sources.map(source=>source.folder+' '+source.count).join('、'),
+]))
 const loadError = ref('')
 const editorError = ref('')
 const loading = ref(false)
@@ -42,6 +47,7 @@ let importTimer: ReturnType<typeof setTimeout> | undefined
 
 const columns = ref([
   { id:'department', label:'所属部门', min:100, visible:true },
+  { id:'sources', label:'简历来源文件夹', min:210, visible:true },
   { id:'headcount', label:'计划人数', min:90, visible:true },
   { id:'status', label:'招聘状态', min:100, visible:true },
   { id:'flow', label:'招聘流程', min:132, visible:true },
@@ -310,6 +316,7 @@ function dateText(value:string) {
           <template #default="{row}">
             <template v-if="row.job">
               <span v-if="column.id==='department'">{{ row.job.department_name }}</span>
+              <span v-else-if="column.id==='sources'" class="job-source">{{ resumeSources.get(row.job.department_name+'\u0000'+row.job.title) || '—' }}</span>
               <span v-else-if="column.id==='headcount'">{{ row.job.planned_headcount===null ? '—' : row.job.planned_headcount+' 人' }}</span>
               <ElTag v-else-if="column.id==='status'" effect="light" :type="row.job.status==='open'?'success':row.job.status==='paused'?'warning':'info'">
                 {{ jobStatusLabel(row.job.status) }}
@@ -473,6 +480,7 @@ function dateText(value:string) {
 .job-title:hover {color:var(--hire-accent)}
 .flow-text {display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .job-numbers {font-variant-numeric:tabular-nums;white-space:nowrap}
+.job-source {color:#627c80;font-size:12px;line-height:1.5}
 .job-footer {display:flex;gap:10px;justify-content:space-between;align-items:center;padding:13px 16px;flex-wrap:wrap}
 .column-edit {display:grid;grid-template-columns:1fr 23px 23px;gap:4px;align-items:center}
 .column-edit button:disabled {opacity:.33;cursor:default}

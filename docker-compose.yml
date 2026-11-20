@@ -52,7 +52,8 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       RECRUITING_LLM_KEY: ${RECRUITING_LLM_KEY:-}
     ports: ["127.0.0.1:${API_PORT:-8001}:8000"]
-    volumes: ["./storage:/data/storage"]
+    # STORAGE_DIR 默认 ./storage；演示数据集用 ./showcase/storage
+    volumes: ["${STORAGE_DIR:-./storage}:/data/storage"]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -69,7 +70,7 @@ services:
       OMP_NUM_THREADS: "2"
       OPENBLAS_NUM_THREADS: "2"
       MKL_NUM_THREADS: "2"
-    volumes: ["./storage:/data/storage", "rs_ocr_models:/home/resume/.paddlex"]
+    volumes: ["${STORAGE_DIR:-./storage}:/data/storage", "rs_ocr_models:/home/resume/.paddlex"]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}

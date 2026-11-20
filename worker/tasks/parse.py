@@ -16,6 +16,9 @@ from app.core.workflow import ReviewReplayError, replay_reviews
 
 logger = logging.getLogger("worker.parse")
 
+# Word 文本少于该长度视为整页图片模板，需对嵌入图片做 OCR（该文本通常只有姓名与联系方式）
+DOCX_OCR_TEXT_THRESHOLD = 120
+
 
 @shared_task(name="worker.process_resume", max_retries=1)
 def process_resume(version_id: int):
@@ -56,15 +59,41 @@ def process_resume(version_id: int):
         if mime_type.endswith("wordprocessingml.document"):
             from PIL import Image
             import io
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
 
             from app.parsing.docx_parser import extract_embedded_images
 
-            for _, blob in extract_embedded_images(path):
+            embedded_images = extract_embedded_images(path)
+            for _, blob in embedded_images:
                 try:
                     img = Image.open(io.BytesIO(blob)).convert("RGB")
                 except Exception:
                     continue
-                pd.spans.extend(photo_detect.detect_photo_regions(img, None, 1))
+                pd.spans.extend(photo_detect.detect_photo_regions(img, page_no=1))
+            # Image-only DOCX templates contain a full-page resume picture and only
+            # a name/contact block as Word text. That block becomes sensitive during
+            # extraction, so the "usable text" test must not be the trigger here:
+            # a tiny Word text body means the content lives in the picture.
+            word_text_length = sum(len(s.raw_text or "") for s in pd.spans if s.span_kind != "photo")
+            if word_text_length < DOCX_OCR_TEXT_THRESHOLD:
+                with TemporaryDirectory(prefix="resume-docx-ocr-") as temp:
+                    for index, (_, blob) in enumerate(embedded_images, 1):
+                        try:
+                            image = Image.open(io.BytesIO(blob)).convert("RGB")
+                        except Exception:
+                            continue
+                        if image.width < 400 or image.height < 400:
+                            continue
+                        image_path = Path(temp) / f"embedded-{index}.png"
+                        image.save(image_path)
+                        image_doc = pipeline.parse_document(str(image_path), "image/png")
+                        for span in image_doc.spans:
+                            if span.raw_text:
+                                span.locator["docx_image"] = index
+                                pd.spans.append(span)
+                        if any(s.raw_text and not s.is_sensitive and s.raw_text.strip("█ ") for s in pd.spans):
+                            break
             pd.meta["has_photo"] = any(s.span_kind == "photo" for s in pd.spans)
             pd.finalize()
 

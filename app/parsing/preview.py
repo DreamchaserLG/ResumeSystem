@@ -7,25 +7,21 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
-from app.core.extraction import PRIVATE_LABELS, SENSITIVE, masked, norm
+from app.core.extraction import PRIVATE_LABELS, SENSITIVE, masked, norm, sensitive_regions
 from app.parsing import pipeline
 
 MAX_PAGES = 40
 MAX_SIDE = 1800
-NEXT_FIELD = re.compile(
-    r"\s*(?:[★◆♦▪●]|\t| {2,})\s*(?=(?:求职意向|应聘岗位|到岗时间|年龄|籍贯|学历|姓名|"
-    r"education|name|objective)\s*[:：])", re.I,
-)
+PRIVATE_MASK = "#edf1f5"
 
 
 def sensitive_ranges(raw):
-    start = 0
-    while match := SENSITIVE.search(raw, start):
-        tail = raw[match.start():match.end()]
-        next_field = NEXT_FIELD.search(tail)
-        end = match.start() + next_field.start() if next_field else match.end()
-        yield match.start(), end
-        start = end
+    """Spans of private values on one line; labels stay readable.
+
+    The whole line used to be covered as soon as a label such as 电话 appeared,
+    which turned the header into an unexplained grey band.
+    """
+    yield from sensitive_regions(raw)
 
 
 def _private(text):

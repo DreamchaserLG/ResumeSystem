@@ -6,12 +6,30 @@ import re
 import unicodedata
 
 RULE_VERSION = "rules-v3"
+PRIVATE_LABEL = (
+    r"身份证(?:号|号码)?|证件号码|婚姻状况|婚育(?:情况|状况)?|生育情况|性别|民族|户籍|出生日期|"
+    r"联系电话|联系地址|详细地址|家庭住址|通讯地址|住址|地址|电话|手机|邮箱|"
+    r"marital status|passport(?: no\.?)?|gender|date of birth|home address|address|phone|email|sex"
+)
 SENSITIVE = re.compile(
     r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{17}[\dXx](?!\d)|"
-    r"(?:身份证(?:号|号码)?|证件号码|婚姻状况|婚育(?:情况|状况)?|生育情况|性别|民族|户籍|出生日期|联系电话|联系地址|详细地址|家庭住址|通讯地址|住址|地址|电话|手机|邮箱|"
-    r"marital status|passport(?: no\.?)?|gender|date of birth|home address|address|phone|email|sex)\s*[:：][^|；;\n]*",
+    rf"(?:{PRIVATE_LABEL})\s*[:：][^|；;\n]*",
     re.I,
 )
+# A line can hold several labelled fields ("电话：… 邮箱：… 工作年限：…").  A private
+# value ends where the next labelled field starts, not at the end of the line.
+NEXT_FIELD_LABEL = (
+    PRIVATE_LABEL
+    + r"|求职意向|应聘岗位|期望职位|期望地点|期望薪资|工作年限|现居地|政治面貌|籍贯|学历|年龄|联系方式"
+)
+FIELD_BREAK = re.compile(rf"(?:{NEXT_FIELD_LABEL})\s*[:：]", re.I)
+PRIVATE_HEAD = re.compile(rf"(?:{PRIVATE_LABEL})\s*[:：]", re.I)
+BARE_CONTACT = re.compile(
+    r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{17}[\dXx](?!\d)",
+    re.I,
+)
+LINE_STOP = re.compile(r"[|；;\n]")
+FIELD_SEPARATORS = " \t\u3000,，、;；|/"
 CONTACT = {
     "email": re.compile(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", re.I),
     "phone": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
@@ -75,9 +93,46 @@ def norm(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
+def sensitive_regions(value: str) -> list[tuple[int, int]]:
+    """Return (start, end) of the private *values* inside one line, left to right.
+
+    The label itself is not private, so "电话：13800000000　工作年限：20 年" yields the
+    eleven digits only.  Without this trim one label swallowed the rest of the line,
+    which hid "工作年限" and painted a full-width grey band over the resume header.
+    """
+    spans: list[tuple[int, int]] = []
+    for head in PRIVATE_HEAD.finditer(value):
+        start = head.end()
+        stop = len(value)
+        if (nxt := FIELD_BREAK.search(value, start)) and nxt.start() < stop:
+            stop = nxt.start()
+        if (sep := LINE_STOP.search(value, start)) and sep.start() < stop:
+            stop = sep.start()
+        end = stop
+        while end > start and value[end - 1] in FIELD_SEPARATORS:
+            end -= 1
+        if end > start:
+            spans.append((start, end))
+    spans.extend((token.start(), token.end()) for token in BARE_CONTACT.finditer(value))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def masked(value: str) -> str:
     # Preserve original Unicode offsets used by evidence links.
-    return SENSITIVE.sub(lambda match: "█" * len(match[0]), value)
+    out = []
+    cursor = 0
+    for start, end in sensitive_regions(value):
+        out.append(value[cursor:start])
+        out.append("█" * (end - start))
+        cursor = end
+    out.append(value[cursor:])
+    return "".join(out)
 
 
 PRIVATE_LABELS = {

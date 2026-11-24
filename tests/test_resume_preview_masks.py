@@ -4,9 +4,43 @@ from io import BytesIO
 import pymupdf
 from PIL import Image
 
+from app.core.extraction import masked, sensitive_regions
 from app.parsing.ir import ParsedDocument, Span
 from app.parsing.docx_parser import parse_docx
 from app.parsing.preview import render_preview
+
+
+def test_labelled_contact_masks_only_the_value():
+    line = "电话：15047851696　邮箱：3200739511@qq.com　工作年限：20 年"
+    result = masked(line)
+    assert len(result) == len(line)
+    assert result.startswith("电话：")
+    assert result.endswith("工作年限：20 年")
+    assert "█" * 11 in result and "█" * 17 in result
+    assert [line[a:b] for a, b in sensitive_regions(line)] == ["15047851696", "3200739511@qq.com"]
+
+
+def test_empty_private_field_is_not_masked():
+    assert masked("电话：　邮箱：　工作年限：20 年") == "电话：　邮箱：　工作年限：20 年"
+
+
+def test_header_line_keeps_unrelated_fields_visible(tmp_path):
+    """A phone number must not paint a band across 工作年限 (the reported white line)."""
+    path = tmp_path / "header.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=460, height=200)
+        page.insert_text((25, 60), "电话：13800000001　工作年限：20 年", fontsize=11, fontname="china-s")
+        pdf.save(path)
+    parsed = ParsedDocument(spans=[])
+    [(_, content, _)], _ = render_preview(str(path), "application/pdf", parsed, False)
+    image = Image.open(BytesIO(content)).convert("RGB")
+    grey = [(x, y) for y in range(image.height) for x in range(image.width)
+            if image.getpixel((x, y)) == (237, 241, 245)]
+    dark_right = [(x, y) for y in range(image.height) for x in range(image.width)
+                  if sum(image.getpixel((x, y))) < 330]
+    assert grey, "the phone value should still be masked"
+    assert max(x for x, _ in grey) < 0.55 * image.width
+    assert max(x for x, _ in dark_right) > max(x for x, _ in grey) + 40
 
 
 def test_pdf_redacts_contact_glyphs_and_can_show_photo(tmp_path):

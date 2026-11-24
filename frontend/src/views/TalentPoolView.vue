@@ -19,7 +19,7 @@ import { filterSearchBody, type FilterSelection } from '@/components/ResumeFilte
 const auth = useAuthStore()
 const departments = ref<Options['departments']>([])
 const statuses = ref<TalentStatusOption[]>([])
-const capabilities = ref<Options['capabilities']>([])
+const searchQuery = ref('')
 const jobs = ref<Job[]>([])
 const available = ref<string[]>([])
 const filters = ref<FilterSelection>({})
@@ -28,6 +28,7 @@ const list = ref<TalentResumeCard[]>([])
 const listScroll = ref<HTMLElement>()
 const loading = ref(false)
 const error = ref('')
+const semanticDegraded = ref(false)
 const total = ref(0)
 const statusCounts = ref<Record<string,number>>({})
 const page = ref(1)
@@ -81,10 +82,15 @@ async function load() {
   const request = ++listRequest
   loading.value = true
   error.value = ''
+  semanticDegraded.value = false
   try {
-    const result = await searchTalent({ ...filterSearchBody(filters.value), page:page.value, size:pageSize }, filterStatus.value)
+    const result = await searchTalent({
+      ...filterSearchBody(filters.value), semantic_query:searchQuery.value || undefined,
+      page:page.value, size:pageSize,
+    }, filterStatus.value)
     if (request !== listRequest) return
     total.value = result.total
+    semanticDegraded.value = Boolean(result.semantic_degraded)
     statusCounts.value = result.counts
     available.value = result.available_facets || []
     const lastPage = Math.max(1, Math.ceil(result.total / pageSize))
@@ -110,6 +116,10 @@ function refreshFilters() {
 }
 function applyFilters(values: FilterSelection) {
   filters.value = values
+  refreshFilters()
+}
+function searchCandidates(query: string) {
+  searchQuery.value = query
   refreshFilters()
 }
 function toggleStatus(code: string) {
@@ -253,7 +263,6 @@ onMounted(() => {
   void load()
   talentStatusOptions().then(result=>{statuses.value=result}).catch(cause=>{error.value=(cause as Error).message})
   api.get<Options>('/hr/options').then(result=>{
-    capabilities.value = result.capabilities || []
     departments.value = result.departments
   }).catch(cause=>{error.value=(cause as Error).message})
   jobDirectory().then(result=>{jobs.value=result.items}).catch(cause=>{error.value=(cause as Error).message})
@@ -268,6 +277,7 @@ onBeforeUnmount(()=>{listRequest++;detailRequest++})
     </header>
 
     <p v-if="error" class="hire-error" role="alert">{{ error }} <button type="button" class="hire-inline-button" @click="load">重试</button></p>
+    <p v-else-if="semanticDegraded" class="hire-error" role="status">向量搜索暂不可用，当前为关键词结果。 <button type="button" class="hire-inline-button" @click="load">重试</button></p>
 
     <section class="talent-board" aria-label="按跟进状态筛选">
       <button v-for="item in statuses" :key="item.code" type="button" class="board-stat"
@@ -279,8 +289,9 @@ onBeforeUnmount(()=>{listRequest++;detailRequest++})
     <div class="talent-workspace hire-surface" :class="{'mobile-details':mobileDetails && current}">
       <aside class="talent-aside" aria-label="人才列表">
         <header class="talent-toolbar"><strong>候选人</strong><span>{{ total }}</span>
-          <CandidateFilterMenu title="筛选人才" :selected="filters" :available="available" :capabilities="capabilities"
-            :jobs="jobs" :requires-department="auth.isSuperAdmin" :departments="auth.isSuperAdmin ? departments : []" @apply="applyFilters"/>
+          <CandidateFilterMenu title="筛选人才" :selected="filters" :available="available" :search-query="searchQuery"
+            :jobs="jobs" :requires-department="auth.isSuperAdmin" :departments="auth.isSuperAdmin ? departments : []"
+            @apply="applyFilters" @search="searchCandidates"/>
         </header>
         <div ref="listScroll" class="talent-list" :aria-busy="loading">
           <CandidateListCard v-for="row in list" :key="row.talent_id" :row="row" appearance="talent" :active="row.talent_id===current?.talent_id"
@@ -394,7 +405,8 @@ onBeforeUnmount(()=>{listRequest++;detailRequest++})
 .talent-aside {min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;border-right:1px solid #e0e7ee}
 .talent-toolbar,.talent-pagination {display:flex;align-items:center;gap:8px;padding:12px;border-bottom:1px solid #e0e7ee}
 .talent-toolbar>span,.talent-pagination>span {font-size:12px;color:var(--hire-muted)}
-.talent-toolbar>.el-button,.talent-pagination>.el-pagination {margin-inline-start:auto}
+.talent-toolbar>strong {white-space:nowrap}
+.talent-pagination>.el-pagination {margin-inline-start:auto}
 .talent-pagination {border-bottom:0;border-top:1px solid #e0e7ee;padding:9px 10px}
 .talent-list {display:grid;align-content:start;gap:8px;padding:10px;overflow:auto;background:#f5f7fb;scrollbar-width:thin}
 .talent-detail {container:talent-detail / inline-size;min-width:0;min-height:0}

@@ -331,7 +331,7 @@ def match_snapshot(request, auth, application_id=None):
               AND (j.department_id=ANY(CAST(:deps AS bigint[])) OR
                    EXISTS (SELECT 1 FROM application a WHERE a.job_id=j.id AND a.deleted_at IS NULL
                            AND a.handling_department_id=ANY(CAST(:deps AS bigint[]))))
-              AND ((CAST(:app AS bigint) IS NULL AND j.id=:job) OR EXISTS (
+              AND ((CAST(:app AS bigint) IS NULL AND j.id=:job AND NOT j.hidden) OR EXISTS (
                   SELECT 1 FROM application a WHERE a.id=:app AND a.job_id=j.id AND a.deleted_at IS NULL
                     AND a.handling_department_id=ANY(CAST(:deps AS bigint[]))))
         """),base_params).mappings().one_or_none()

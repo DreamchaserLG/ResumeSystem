@@ -12,7 +12,7 @@ x-app-env: &app-env
 
 services:
   pg:
-    image: public.ecr.aws/docker/library/postgres:16
+    build: {context: ., dockerfile: deploy/Postgres.Dockerfile}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-resume}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-resume}
@@ -52,9 +52,13 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       RECRUITING_LLM_KEY: ${RECRUITING_LLM_KEY:-}
       REASONING_TRANSLATION_MODEL_DIR: /opt/reasoning-translation
+      EMBEDDING_SOCKET: /run/resume-embedding/model.sock
     ports: ["127.0.0.1:${API_PORT:-8001}:8000"]
     # STORAGE_DIR 默认 ./storage；演示数据集用 ./showcase/storage
-    volumes: ["${STORAGE_DIR:-./storage}:/data/storage", "./models/translation/en_zh:/opt/reasoning-translation:ro"]
+    volumes:
+      - "${STORAGE_DIR:-./storage}:/data/storage"
+      - "./models/translation/en_zh:/opt/reasoning-translation:ro"
+      - "./storage/embedding:/run/resume-embedding:ro"
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { RefreshOutline, ChevronBackOutline, DocumentTextOutline, EllipsisHorizontal, GitNetworkOutline } from '@vicons/ionicons5'
+import { RefreshOutline, ChevronBackOutline, DocumentTextOutline, EllipsisHorizontal, GitNetworkOutline, CloudUploadOutline, FolderOpenOutline } from '@vicons/ionicons5'
 import { ElButton, ElDropdown, ElDropdownMenu, ElDropdownItem, ElPagination, ElTag, ElMessage } from 'element-plus'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
@@ -10,6 +10,7 @@ import { dateLabel, label, locationText, schoolTagLabels, type Detail, type Job,
 import { jobDirectory } from '@/api/recruiting'
 import { addTalent, talentStatusOptions, type TalentStatusOption } from '@/api/talent'
 import ResumeBook from '@/components/ResumeBook.vue'
+import ResumeBatchImport from '@/components/ResumeBatchImport.vue'
 import CandidateFilterMenu from '@/components/CandidateFilterMenu.vue'
 import CandidateListCard from '@/components/CandidateListCard.vue'
 import { filterSearchBody, type FilterSelection } from '@/components/ResumeFilters.vue'
@@ -34,7 +35,9 @@ try {
 } catch { /* Invalid browser state falls back to the route defaults. */ }
 const directoryDepartments=ref<{id:number;name:string}[]>([])
 const jobs=ref<Job[]>([])
-const capabilities=ref<{code:string;name:string}[]>([])
+const singleImportOpen=ref(false)
+const batchImportOpen=ref(false)
+const searchQuery=ref('')
 const list=ref<ResumeCard[]>([])
 const current=ref<ResumeCard>()
 const details=ref<Detail>()
@@ -52,6 +55,7 @@ const filters=ref<FilterSelection>({
 const statuses=ref<TalentStatusOption[]>([])
 const listLoading=ref(false), detailLoading=ref(false)
 const error=ref(''), detailError=ref('')
+const semanticDegraded=ref(false)
 const tab=ref<ResumeTab>(restored?.tab || 'overview')
 const talentAdding=ref(false)
 const evidenceGroups=computed(()=>{
@@ -126,6 +130,8 @@ const menuFilters=computed(()=>{
 })
 const displayName=(row:ResumeCard)=>row.name || '申请 #'+row.id
 const currentMatchHits=computed(()=>current.value?.match_skills?.filter(skill=>skill.matched).length ?? 0)
+const preferredImportJob=computed(()=>incomingJob.value ??
+  (menuFilters.value.jobs?.length===1 ? positive(menuFilters.value.jobs[0]) : undefined))
 
 function followupStatus(row:ResumeCard) {
   const option=statuses.value.find(status=>status.code===row.talent_status)
@@ -170,23 +176,25 @@ function resetCurrent() {
 async function load(preferred?:number, bringForward?:boolean) {
   const sequence=++listVersion
   if(refreshTimer) clearTimeout(refreshTimer)
-  listLoading.value=true;error.value=''
+  listLoading.value=true;error.value='';semanticDegraded.value=false
   try {
     const records=await api.post<ResumeCardPage>('/hr/resume-cards/search',{
-      ...filterSearchBody(filters.value),page:page.value,size:size.value,job_id:incomingJob.value,
+      ...filterSearchBody(filters.value),page:page.value,size:size.value,job_id:incomingJob.value,sort:'relevance',
+      semantic_query:searchQuery.value || undefined,
       department_id:auth.isSuperAdmin ? filters.value.department : undefined,
     })
     if(sequence!==listVersion) return
     list.value=records.items
     total.value=records.total
+    semanticDegraded.value=Boolean(records.semantic_degraded)
     available.value=records.available_facets || []
     const maxPage=Math.max(1,Math.ceil(records.total/size.value))
     if(page.value>maxPage){page.value=maxPage;return}
-    const explicit=incomingCandidate.value
+    const explicit=searchQuery.value ? undefined : incomingCandidate.value
     const requested=preferred ?? explicit
     let row=records.items.find(row=>row.id===(requested ?? current.value?.id))
     if(!row && requested && explicit===requested) {
-      const direct=await api.post<ResumeCardPage>('/hr/resume-cards/search',{application_id:requested,size:1})
+      const direct=await api.post<ResumeCardPage>('/hr/resume-cards/search',{application_id:requested,size:1,sort:'relevance'})
       if(sequence!==listVersion) return
       row=direct.items[0]
       if(!row) error.value='该候选申请不存在，或超出当前可查看范围。'
@@ -198,6 +206,18 @@ async function load(preferred?:number, bringForward?:boolean) {
     }
   } catch(cause) {if(sequence===listVersion)error.value=(cause as Error).message}
   finally {if(sequence===listVersion)listLoading.value=false}
+}
+function refreshFilters() {
+  candidateScroll.value?.scrollTo({top:0})
+  if(page.value!==1) page.value=1
+  else void load()
+}
+function resumeImported(_job:number,id:number) {
+  void load(id)
+}
+function searchCandidates(query:string) {
+  searchQuery.value=query
+  refreshFilters()
 }
 async function applyFilters(values:FilterSelection) {
   filters.value=values
@@ -211,9 +231,7 @@ async function applyFilters(values:FilterSelection) {
     try {await router.replace({name:'applications',query})}
     finally {ignoredRoute=false}
   }
-  candidateScroll.value?.scrollTo({top:0})
-  if(page.value!==1) page.value=1
-  else void load()
+  refreshFilters()
 }
 let ignoredRoute=false
 watch([incomingJob,incomingCandidate,incomingDepartment],([,candidate,department])=>{
@@ -234,7 +252,6 @@ watch([page,filters,tab,()=>current.value?.id,mobileDetails,listWidth,detailWidt
 onMounted(()=>{
   void load(restored?.candidate,restored?.mobileDetails)
   api.get<Options>('/hr/options').then(result=>{
-    capabilities.value=result.capabilities || []
     directoryDepartments.value=result.departments
   }).catch(cause=>{error.value=(cause as Error).message})
   jobDirectory().then(result=>{jobs.value=result.items}).catch(cause=>{error.value=(cause as Error).message})
@@ -323,19 +340,25 @@ function tagValue(tag:ResumeCard['tags'][number]) {
   <main class="hire-page candidate-page">
     <header class="hire-heading">
       <div><h1>简历管理</h1><p>简历由部门共享目录自动入库</p></div>
-      <ElButton :icon="RefreshOutline" :loading="listLoading" @click="load()">刷新简历</ElButton>
+      <div class="hire-toolbar import-actions">
+        <ElButton :icon="RefreshOutline" :loading="listLoading" @click="load()">刷新简历</ElButton>
+        <ElButton :icon="CloudUploadOutline" @click="singleImportOpen=true">单份导入</ElButton>
+        <ElButton type="primary" :icon="FolderOpenOutline" @click="batchImportOpen=true">批量导入</ElButton>
+      </div>
     </header>
     <p v-if="error" class="hire-error candidate-error" role="alert">{{ error }} <button class="hire-inline-button" @click="load()">重试</button></p>
+    <p v-else-if="semanticDegraded" class="hire-error candidate-error" role="status">向量搜索暂不可用，当前为关键词结果。 <button class="hire-inline-button" @click="load()">重试</button></p>
 
     <div ref="candidateWorkspace" class="candidate-workspace hire-surface" :style="{'--candidate-width':listWidth+'px'}"
       :class="{ 'mobile-details':mobileDetails && current }">
       <aside class="candidate-aside" aria-label="候选人列表">
         <header class="candidate-toolbar">
             <div class="candidate-toolbar-main"><strong>候选人</strong><span>{{ total }}</span>
-              <CandidateFilterMenu title="筛选简历" :selected="menuFilters" :available="available" :capabilities="capabilities"
+              <CandidateFilterMenu title="筛选简历" :selected="menuFilters" :available="available" :search-query="searchQuery"
                 :jobs="jobs" :requires-department="auth.isSuperAdmin"
-                :departments="auth.isSuperAdmin ? directoryDepartments : []" @apply="applyFilters"/>
+                :departments="auth.isSuperAdmin ? directoryDepartments : []" @apply="applyFilters" @search="searchCandidates"/>
             </div>
+            <small class="candidate-order">按岗位匹配度排序</small>
         </header>
           <div ref="candidateScroll" class="candidate-list" :aria-busy="listLoading">
             <CandidateListCard v-for="row in list" :key="row.id" :row="row" :active="current?.id===row.id"
@@ -383,10 +406,13 @@ function tagValue(tag:ResumeCard['tags'][number]) {
               <template v-if="tab==='overview' || tab==='resume'">
                 <section class="candidate-match" aria-labelledby="candidate-match-title">
                   <div class="match-heading"><h3 id="candidate-match-title">岗位匹配度</h3>
-                    <strong v-if="current.match_percent!=null">{{ current.match_percent }}%</strong>
+                    <strong v-if="current.match_percent!=null">{{ current.match_percent.toFixed(2) }}%</strong>
                   </div>
+                  <p v-if="current.match_score" class="match-caption">
+                    {{ current.job_title }} · 职责 {{ current.match_score.duty.toFixed(2) }} 分 · 技能 {{ current.match_score.skill.toFixed(2) }} 分
+                  </p>
                   <p v-if="current.match_skills?.length" class="match-caption">
-                    {{ current.job_title }} · {{ currentMatchHits }} / {{ current.match_skills.length }} 项有简历证据
+                    {{ currentMatchHits }} / {{ current.match_skills.length }} 项技能有简历证据
                   </p>
                   <table v-if="current.match_skills?.length" class="match-table">
                     <thead><tr><th scope="col">岗位技能要求</th><th scope="col">核对结果</th></tr></thead>
@@ -395,8 +421,7 @@ function tagValue(tag:ResumeCard['tags'][number]) {
                       <td><span :class="{'match-met':skill.matched}">{{ skill.matched ? '有证据' : '待核实' }}</span></td>
                     </tr></tbody>
                   </table>
-                  <p v-else-if="current.match_percent!=null" class="match-caption">{{ current.job_title }} · 岗位技能匹配</p>
-                  <p v-else class="match-caption">{{ !current.job_id ? '关联岗位后显示匹配结果。' : !current.version_id ? '简历解析完成后显示匹配结果。' : '当前岗位暂无可核验的技能要求。' }}</p>
+                  <p v-if="current.match_percent==null" class="match-caption">{{ !current.job_id ? '关联岗位后显示匹配结果。' : !current.version_id ? '简历解析完成后显示匹配结果。' : '待岗位索引或筛选条件就绪后显示匹配结果。' }}</p>
                 </section>
                 <section v-if="candidateOverview" class="candidate-info" aria-label="基本信息">
                   <h3>基本信息</h3>
@@ -459,21 +484,29 @@ function tagValue(tag:ResumeCard['tags'][number]) {
         </div>
       </section>
       <section v-else class="candidate-no-selection">
-        <DocumentTextOutline/><h2>查看候选人简历</h2><p>文件服务器入库后的简历将在左侧显示。</p>
+        <DocumentTextOutline/><h2>查看候选人简历</h2><p>导入后的简历将在左侧显示。</p>
       </section>
     </div>
 
+    <ResumeBatchImport v-model="singleImportOpen" mode="single" :jobs="jobs" :preferred-job="preferredImportJob"
+      @imported="resumeImported" @updated="load()"/>
+    <ResumeBatchImport v-model="batchImportOpen" mode="batch" :jobs="jobs" :preferred-job="preferredImportJob"
+      @imported="resumeImported" @updated="load()"/>
   </main>
 </template>
 
 <style scoped>
 .candidate-page {max-width:none;height:100%;display:grid;grid-template-rows:auto minmax(0,1fr);min-height:480px}
 .candidate-page:has(.candidate-error){grid-template-rows:auto auto minmax(0,1fr)}
+.import-actions {gap:8px}
+.import-actions :deep(.el-button+.el-button) {margin-left:0}
 .candidate-workspace {display:grid;grid-template-columns:min(var(--candidate-width),38%) 7px minmax(0,1fr);min-height:0;overflow:hidden}
 .candidate-aside {display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-height:0;min-width:0}
 .candidate-toolbar {position:relative;padding:12px;border-bottom:1px solid var(--hire-line);background:linear-gradient(180deg,#fff,#fbfdfd)}
 .candidate-toolbar-main,.candidate-pagination{display:flex;align-items:center;gap:8px;min-width:0}
-.candidate-toolbar-main>span {font-size:12px;color:var(--hire-muted)}.candidate-toolbar-main>.el-button{margin-inline-start:auto}
+.candidate-toolbar-main>span {font-size:12px;color:var(--hire-muted)}
+.candidate-toolbar-main>strong {white-space:nowrap}
+.candidate-order {display:block;margin-top:5px;color:var(--hire-muted);font-size:11px}
 .aside-toggle{display:grid;place-items:center;width:30px;height:30px;border:1px solid var(--hire-line);border-radius:7px;background:white;color:var(--hire-accent-dark);cursor:pointer;flex:none;transition:background-color var(--rs-motion-fast),border-color var(--rs-motion-fast),transform var(--rs-motion-fast)}
 .aside-toggle:hover{background:var(--hire-soft);border-color:#9ac9c3;transform:scale(1.04)}
 .aside-toggle svg {width:14px;height:14px}

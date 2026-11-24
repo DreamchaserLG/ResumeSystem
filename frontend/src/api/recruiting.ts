@@ -4,7 +4,9 @@ import type { Department, Job } from './hr'
 import type { TrendPoint, DepartmentStats, RecruitmentJob } from './statistics'
 
 export interface Company { id:number; name:string; parent_id:number|null }
-export interface JobDirectory { items:Job[]; departments:Required<Department>[]; companies:Company[] }
+export interface DepartmentManager { id:number; display_name:string }
+export interface Recruiter extends DepartmentManager { department_names:string[] }
+export interface JobDirectory { items:Job[]; departments:(Required<Department> & {managers:DepartmentManager[]})[]; companies:Company[]; recruiters?:Recruiter[] }
 export const jobDirectory = () => api.get<JobDirectory>('/jobs')
 export interface DepartmentAccount { id:number; display_name:string; email:string; status:'active'|'disabled' }
 export interface JobImportDraft {

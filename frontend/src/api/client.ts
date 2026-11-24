@@ -53,8 +53,8 @@ export const api = {
   },
   get: <T>(path: string) => request<T>(path),
   verifySession: <T>() => request<T>('/auth/me', {signal:AbortSignal.timeout(8000)}, false),
-  post: <T>(path: string, data?: unknown) =>
-    request<T>(path, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
+  post: <T>(path: string, data?: unknown, signal?: AbortSignal) =>
+    request<T>(path, { method: 'POST', body: data ? JSON.stringify(data) : undefined, signal }),
   put: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: 'PUT', body: data ? JSON.stringify(data) : undefined }),
   patch: <T>(path: string, data?: unknown) =>

@@ -5,26 +5,24 @@ import { BriefcaseOutline, FolderOpenOutline, SearchOutline, SettingsOutline, Ad
 import { ElAlert, ElButton, ElDialog, ElDrawer, ElDropdown, ElDropdownMenu, ElDropdownItem, ElInput, ElSelect, ElOption, ElTable, ElTableColumn, ElTag, ElPagination, ElPopover, ElCheckbox, ElMessage } from 'element-plus'
 import { api } from '@/api/client'
 import { dateLabel, jobStatusLabel, jobStatusOptions, type Job } from '@/api/hr'
-import { jobDirectory, type JobDirectory, type JobImportStatus } from '@/api/recruiting'
+import { jobDirectory, type JobDirectory, type JobImportStatus, type Recruiter } from '@/api/recruiting'
 import FilePickerZone from '@/components/FilePickerZone.vue'
+import JobPostingDetails from '@/components/JobPostingDetails.vue'
 import { useAuthStore } from '@/stores/auth'
-import showcasePlan from '@/data/showcasePlan.json'
 
 type Node = { key:string; title:string; kind:'company'|'department'|'job'; departmentId?:number; job?:Job; children?:Node[] }
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
-const directory = ref<JobDirectory>({items:[],departments:[],companies:[]})
+const directory = ref<JobDirectory>({items:[],departments:[],companies:[],recruiters:[]})
 const search = ref('')
 const status = ref('')
 const kind = ref('')
+const category = ref('')
+const categories = computed(()=>[...new Set(directory.value.items.flatMap(job=>job.category ? [job.category] : []))].sort((a,b)=>a.localeCompare(b,'zh-CN')))
 const processType = ref('')
 const page = ref(1)
 const pageSize = ref(50)
-const resumeSources = new Map(showcasePlan.jobs.map(item=>[
-  item.department + '\u0000' + item.title,
-  item.sources.map(source=>source.folder+' '+source.count).join('、'),
-]))
 const loadError = ref('')
 const editorError = ref('')
 const loading = ref(false)
@@ -46,12 +44,12 @@ let importSequence = 0
 let importTimer: ReturnType<typeof setTimeout> | undefined
 
 const columns = ref([
+  { id:'category', label:'岗位分类', min:120, visible:true },
   { id:'department', label:'所属部门', min:100, visible:true },
-  { id:'sources', label:'简历来源文件夹', min:210, visible:true },
   { id:'headcount', label:'计划人数', min:90, visible:true },
   { id:'status', label:'招聘状态', min:100, visible:true },
-  { id:'flow', label:'招聘流程', min:132, visible:true },
-  { id:'owner', label:'负责人', min:88, visible:true },
+  { id:'flow', label:'招聘流程', min:250, visible:true },
+  { id:'owner', label:'负责人', min:128, visible:true },
   { id:'resumes', label:'简历', min:80, visible:true },
   { id:'updated', label:'更新时间', min:155, visible:true },
 ])
@@ -77,12 +75,13 @@ function moveColumn(index:number,direction:number) {
 const filtered = computed(()=>directory.value.items.filter(job=>{
   const term=search.value.trim().toLocaleLowerCase()
   return (!status.value || job.status===status.value) && (!kind.value || job.recruitment_type===kind.value)
+    && (!category.value || job.category===category.value)
     && (!processType.value || (processType.value==='interview')===Boolean(job.rounds.length))
-    && (!term || [job.title,job.department_name,job.recruiter_name].some(value=>value.toLocaleLowerCase().includes(term)))
+    && (!term || [job.title,job.department_name,job.department_recruiter_name || ''].some(value=>value.toLocaleLowerCase().includes(term)))
     && (!route.query.department || String(job.department_id)===route.query.department)
     && (!route.query.job || String(job.id)===route.query.job)
 }))
-watch([search,status,kind,processType,pageSize,()=>route.query],()=>{page.value=1})
+watch([search,status,kind,category,processType,pageSize,()=>route.query],()=>{page.value=1})
 watch(()=>filtered.value.length,total=>{page.value=Math.min(page.value,Math.max(1,Math.ceil(total/pageSize.value)))})
 const board = computed<Node[]>(()=>{
   const rows=filtered.value.slice((page.value-1)*pageSize.value,page.value*pageSize.value)
@@ -114,15 +113,28 @@ const counts = computed(()=>[
 ])
 const form = reactive({
   title:'', jd:'', status:'paused', department_id:undefined as number|undefined,
-  recruitment_type:'social', recruiter_name:'', planned_headcount:null as number|null,
+  recruitment_type:'social', recruiter_user_id:null as number|null, planned_headcount:null as number|null,
   target_date:'', requirements:'', required_skills:[] as string[], experience_tags:[] as string[],
   recruitment_start:'', recruitment_end:'', rounds:[] as {id?:number;name:string}[],
+})
+function recruiterOptions(departmentId:number|undefined):Recruiter[] {
+  const department=directory.value.departments.find(item=>item.id===departmentId)
+  if(!auth.isSuperAdmin) return (department?.managers || []).map(manager=>({...manager,department_names:department?[department.name]:[]}))
+  const byDepartment=(recruiter:Recruiter)=>Number(recruiter.department_names.includes(department?.name || ''))
+  return [...(directory.value.recruiters || [])].sort((left,right)=>byDepartment(right)-byDepartment(left))
+}
+const recruiters=computed(()=>recruiterOptions(form.department_id))
+const externalRecruiter=computed(()=>drawerMode.value==='edit' && active.value?.recruiter_user_id
+  && !recruiters.value.some(item=>item.id===active.value?.recruiter_user_id) ? active.value : undefined)
+watch(()=>form.department_id, ()=>{
+  if(drawerMode.value==='create' && form.recruiter_user_id!=null &&
+      !recruiters.value.some(item=>item.id===form.recruiter_user_id)) form.recruiter_user_id=null
 })
 const incomplete = computed(()=>[
   !form.title.trim() && '岗位名称', !form.department_id && '所属部门',
   !form.recruitment_type && '岗位属性', !form.planned_headcount && '计划招聘人数',
-  !form.recruiter_name.trim() && '负责人', !form.target_date && '目标日期',
-  !form.jd.trim() && '岗位描述', !form.requirements.trim() && '任职要求',
+  form.recruiter_user_id==null && '负责人', !form.target_date && '目标日期',
+  !form.jd.trim() && '岗位职责', !form.requirements.trim() && '任职要求',
   !form.required_skills.length && '必备技能', !form.experience_tags.length && '经验要求',
   (!form.recruitment_start || !form.recruitment_end) && '招聘期限', !form.rounds.length && '面试轮次',
 ].filter(Boolean))
@@ -140,11 +152,13 @@ function openJob(mode:typeof drawerMode.value,job?:Job,copy=false) {
   imported.value=false
   importWarnings.value=[]
   roundName.value=''
+  const department=directory.value.departments.find(item=>item.id===job?.department_id) ?? directory.value.departments[0]
   Object.assign(form,{
     title:copy ? (job?.title+'（副本）').slice(0,120) : job?.title || '',
     jd:job?.jd || '', status:copy ? 'paused' : job?.status || 'paused',
-    department_id:job?.department_id || directory.value.departments[0]?.id,
-    recruitment_type:job?.recruitment_type || 'social', recruiter_name:job?.recruiter_name || '',
+    department_id:job?.department_id || department?.id,
+    recruitment_type:job?.recruitment_type || 'social',
+    recruiter_user_id:job?.recruiter_user_id ?? (department?.managers.length===1 ? department.managers[0].id : null),
     target_date:job?.target_date || '', requirements:job?.requirements || '',
     required_skills:[...(job?.required_skills ?? [])],experience_tags:[...(job?.experience_tags ?? [])],
     recruitment_start:job?.recruitment_start || '',recruitment_end:job?.recruitment_end || '', planned_headcount:job?.planned_headcount ?? null,
@@ -227,7 +241,7 @@ async function uploadJob() {
       importWarnings.value=[...draft.warnings,...(named && !department?['未在可管理的部门中找到「'+named+'」，请选择归属部门。']:[])]
       Object.assign(form,{
         title:draft.title,department_id:department?.id,jd:draft.jd,recruitment_type:draft.recruitment_type || '',
-        recruiter_name:draft.recruiter_name,planned_headcount:draft.planned_headcount,
+        recruiter_user_id:recruiterOptions(department?.id).find(manager=>manager.display_name===draft.recruiter_name)?.id ?? null,planned_headcount:draft.planned_headcount,
         target_date:draft.target_date || '',requirements:draft.requirements || '',
         required_skills:draft.required_skills || [],experience_tags:draft.experience_tags || [],
         recruitment_start:draft.recruitment_start || '',recruitment_end:draft.recruitment_end || '',rounds:draft.rounds.map(name=>({name})),
@@ -288,6 +302,9 @@ function dateText(value:string) {
         <ElSelect v-model="kind" placeholder="岗位属性" clearable aria-label="岗位属性">
           <ElOption v-for="(name,code) in types" :key="code" :label="name" :value="code"/>
         </ElSelect>
+        <ElSelect v-model="category" placeholder="岗位分类" clearable aria-label="岗位分类">
+          <ElOption v-for="value in categories" :key="value" :label="value" :value="value"/>
+        </ElSelect>
         <ElSelect v-model="status" placeholder="招聘状态" clearable aria-label="招聘状态">
           <ElOption v-for="option in jobStatusOptions" :key="option.value" :label="option.label" :value="option.value"/>
         </ElSelect>
@@ -315,14 +332,16 @@ function dateText(value:string) {
         <ElTableColumn v-for="column in columns.filter(item=>item.visible)" :key="column.id" :label="column.label" :min-width="column.min">
           <template #default="{row}">
             <template v-if="row.job">
-              <span v-if="column.id==='department'">{{ row.job.department_name }}</span>
-              <span v-else-if="column.id==='sources'" class="job-source">{{ resumeSources.get(row.job.department_name+'\u0000'+row.job.title) || '—' }}</span>
+              <span v-if="column.id==='category'">{{ row.job.category || '—' }}</span>
+              <span v-else-if="column.id==='department'">{{ row.job.department_name }}</span>
               <span v-else-if="column.id==='headcount'">{{ row.job.planned_headcount===null ? '—' : row.job.planned_headcount+' 人' }}</span>
               <ElTag v-else-if="column.id==='status'" effect="light" :type="row.job.status==='open'?'success':row.job.status==='paused'?'warning':'info'">
                 {{ jobStatusLabel(row.job.status) }}
               </ElTag>
-              <span v-else-if="column.id==='flow'" class="flow-text">{{ row.job.rounds.map((r:{name:string})=>r.name).join(' · ') || '无面试流程' }}</span>
-              <span v-else-if="column.id==='owner'">{{ row.job.recruiter_name || '—' }}</span>
+              <span v-else-if="column.id==='flow'" class="recruitment-flow">
+                {{ ['简历审核', ...row.job.rounds.map((r:{name:string})=>r.name), '录取'].join(' → ') }}
+              </span>
+              <span v-else-if="column.id==='owner'">{{ row.job.department_recruiter_name || '待分配' }}</span>
               <span v-else-if="column.id==='updated'" class="job-numbers">{{ dateText(row.job.updated_at) }}</span>
               <RouterLink v-else-if="column.id==='resumes'"  :to="{name:'job-candidates',params:{jobId:row.job.id}}"
                 class="hire-inline-button" @click.stop>{{ row.job.application_count }} 份</RouterLink>
@@ -364,14 +383,14 @@ function dateText(value:string) {
         <div class="job-detail-title"><BriefcaseOutline/><div><h2>{{ active.title }}</h2>
           <p class="hire-muted">{{ active.company_name }} / {{ active.department_name }} · {{ types[active.recruitment_type] }}</p></div></div>
         <dl class="job-facts"><div><dt>状态</dt><dd>{{ jobStatusLabel(active.status) }}</dd></div>
-          <div><dt>负责人</dt><dd>{{ active.recruiter_name || '未填写' }}</dd></div>
+          <div><dt>岗位分类</dt><dd>{{ active.category || '未分类' }}</dd></div>
+          <div><dt>负责人</dt><dd>{{ active.department_recruiter_name || '待分配' }}</dd></div>
           <div><dt>招聘计划</dt><dd>{{ active.planned_headcount ?? '未设置' }}</dd></div>
           <div><dt>更新时间</dt><dd>{{ dateText(active.updated_at) }}</dd></div>
-          <div><dt>招聘期限</dt><dd>{{ active.recruitment_start || '未设置' }} 至 {{ active.recruitment_end || '未设置' }}</dd></div>
+          <div><dt>{{ active.recruitment_window_is_reference ? '招聘期限 · 参考排期' : '招聘期限' }}</dt><dd>{{ active.recruitment_start || '未设置' }} 至 {{ active.recruitment_end || '未设置' }}</dd></div>
           <div><dt>计划完成日期</dt><dd>{{ active.target_date || '未设置' }}</dd></div>
           <div><dt>面试流程</dt><dd>{{ active.rounds.map(round=>round.name).join(' → ') || '无面试流程' }}</dd></div></dl>
-        <h3>岗位描述</h3><p class="job-description">{{ active.jd || '尚未填写岗位描述。' }}</p>
-        <h3 class="job-requirement-heading">任职要求</h3><p class="job-description">{{ active.requirements || '尚未填写任职要求。' }}</p>
+        <JobPostingDetails :job="active"/>
         <div class="job-tag-details">
           <strong>必备技能</strong><ElTag v-for="tag in active.required_skills" :key="tag" effect="plain">{{ tag }}</ElTag>
           <small v-if="!active.required_skills?.length">未设置</small>
@@ -398,12 +417,23 @@ function dateText(value:string) {
         <label>招聘状态<ElSelect v-model="form.status" aria-label="招聘状态">
           <ElOption v-for="item in jobStatusOptions" :key="item.value" :value="item.value" :label="item.label"/>
         </ElSelect></label>
-        <label>负责人<ElInput v-model="form.recruiter_name" maxlength="80"/></label>
+        <label>负责人
+          <ElSelect v-model="form.recruiter_user_id" aria-label="负责人" clearable :value-on-clear="null"
+            filterable :disabled="!recruiters.length && !externalRecruiter"
+            :placeholder="recruiters.length ? '选择现有招聘人' : '暂无可选招聘人'">
+            <ElOption v-if="externalRecruiter" :label="externalRecruiter.department_recruiter_name || '当前负责人'"
+              :value="externalRecruiter.recruiter_user_id!" disabled/>
+            <ElOption v-for="recruiter in recruiters" :key="recruiter.id" :value="recruiter.id"
+              :label="recruiter.display_name === recruiter.department_names.join('、')+' HR'
+                ? recruiter.display_name : [recruiter.display_name,recruiter.department_names.join('、')].filter(Boolean).join(' · ')"/>
+
+          </ElSelect>
+        </label>
         <label>计划招聘人数<input v-model.number="form.planned_headcount" type="number" min="1" max="100000"></label>
         <label>计划完成日期<input v-model="form.target_date" type="date"></label>
         <label>招聘开始日期<input v-model="form.recruitment_start" type="date" :max="form.recruitment_end || undefined"></label>
         <label>招聘截止日期<input v-model="form.recruitment_end" type="date" :min="form.recruitment_start || undefined"></label>
-        <label class="wide">岗位描述<ElInput v-model="form.jd" type="textarea" :rows="4" maxlength="4000" placeholder="填写日常职责、工作范围及目标"/></label>
+        <label class="wide">岗位职责<ElInput v-model="form.jd" type="textarea" :rows="4" maxlength="4000" placeholder="填写日常职责、工作范围及目标"/></label>
         <label class="wide">任职要求<ElInput v-model="form.requirements" type="textarea" :rows="4" maxlength="4000" placeholder="填写专业背景、资格、能力及其他任职条件"/></label>
         <label class="wide">必备技能
           <ElSelect v-model="form.required_skills" multiple filterable allow-create default-first-option :reserve-keyword="false"
@@ -478,9 +508,8 @@ function dateText(value:string) {
 .folder-title svg,.job-detail-title svg {width:17px;height:17px;color:var(--hire-accent);flex:none}
 .job-title {font-weight:630;text-align:left;text-decoration:none}
 .job-title:hover {color:var(--hire-accent)}
-.flow-text {display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.recruitment-flow {display:block;line-height:1.6;white-space:normal}
 .job-numbers {font-variant-numeric:tabular-nums;white-space:nowrap}
-.job-source {color:#627c80;font-size:12px;line-height:1.5}
 .job-footer {display:flex;gap:10px;justify-content:space-between;align-items:center;padding:13px 16px;flex-wrap:wrap}
 .column-edit {display:grid;grid-template-columns:1fr 23px 23px;gap:4px;align-items:center}
 .column-edit button:disabled {opacity:.33;cursor:default}
@@ -489,10 +518,8 @@ function dateText(value:string) {
 .job-detail-title svg {margin-top:4px;width:25px;height:25px}
 .job-facts {display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:18px;border:1px solid #dcebe8;background:linear-gradient(135deg,#f3faf8,#f7f8fc);margin:18px 0;border-radius:11px;font-size:13px}
 .job-facts dt {color:var(--hire-muted)} .job-facts dd {margin:3px 0 0}
-.job-requirement-heading {margin-top:17px}
 .job-tag-details {display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:14px;font-size:13px}
 .job-tag-details small {color:var(--hire-muted)}
-.job-description {white-space:pre-wrap;margin-top:8px;line-height:1.75}
 .job-editor {display:grid;grid-template-columns:1fr 1fr;gap:15px}
 .job-editor .wide,.job-editor .hire-error {grid-column:1/-1}
 .job-editor label {display:grid;gap:5px;font-size:13px}

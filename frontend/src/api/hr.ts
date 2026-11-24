@@ -11,7 +11,13 @@ export interface InterviewRound { id: number; name: string; position: number }
 export type StageCode = 'review' | 'progress' | 'interview' | 'rejected' | 'hired'
 export interface Stage { code: StageCode; label: string; round_id: number | null }
 export interface HiringRequirements { requirements:string; required_skills:string[]; experience_tags:string[]; recruitment_start:string|null; recruitment_end:string|null }
-export interface Job extends HiringRequirements { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; planned_headcount: number | null; target_date: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[]; company_id: number; company_name: string; recruitment_type: string; recruiter_name: string; updated_at: string }
+export interface JobPostingSource { platform:string; posting:string; url:string; match:'affiliated'|'nearby'|'market' }
+export const postingSourceLabel = {affiliated:'关联企业同名岗位',nearby:'本集团相近岗位',market:'市场对标'}
+export interface JobPostingReference {
+  category:string|null; jd_sources:JobPostingSource[]; reference_current:boolean; jd_researched_on:string|null
+  recruitment_window_is_reference:boolean
+}
+export interface Job extends HiringRequirements, JobPostingReference { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; planned_headcount: number | null; target_date: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[]; company_id: number; company_name: string; recruitment_type: string; recruiter_name: string; recruiter_user_id: number | null; department_recruiter_name: string | null; updated_at: string }
 export type TransferJob = Pick<Job, 'id' | 'title' | 'department_id' | 'department_name'>
 export const stagesFor = (rounds: InterviewRound[] = []): Stage[] => [
   { code: 'review', label: '待审核', round_id: null },
@@ -47,6 +53,8 @@ export interface Detail extends Application {
   stage: Stage; rounds: InterviewRound[]; workflow_version: number
 }
 export interface Options { departments: Department[]; hr_department_ids: number[]; skills: string[]; school_tags: { job_id: number; tag_code: string }[]; capabilities: { code: string; name: string }[] }
+export type CapabilityTag = Options['capabilities'][number]
+export type CapabilityMatch = CapabilityTag & { similarity:number | null }
 export interface Page<T> { items: T[]; has_more: boolean }
 export interface SearchResult { items: (Pick<Application, 'id' | 'job_title' | 'name'> & { evidence: Evidence[] })[]; total: number; cached: boolean }
 export const labels: Record<string, string> = {
@@ -81,13 +89,39 @@ export interface ResumeCard {
   status: string; stage: Stage; workflow_version: number; parse_status: string; page_count: number; has_avatar: boolean; tags: ResumeTag[]; latest_note?: string | null; salary_midpoint?: number | null; recent_company?: string | null; current_company?: string | null
   talent_status_label?: string | null
   match_percent?: number | null
+  match_score?: JobMatchScore | null
   match_skills?: { name:string; matched:boolean }[]
 }
-export interface ResumeCardPage { items: ResumeCard[]; total: number; page: number; size: number; school_filters: boolean; available_facets?: string[] }
+export interface ResumeCardPage { items: ResumeCard[]; total: number; page: number; size: number; school_filters: boolean; available_facets?: string[]; semantic_degraded?: boolean }
 
 
+export interface JobMatchScore {
+  total:number; duty:number; skill:number; basis:'uncalibrated_positive_cosine'
+  duty_weight:number; skill_weight:number; missing_required_skills:string[]
+}
+export type RetrievalSource = 'title'|'reference'|'jd'|'reviewed'|'pending'
+export type RetrievalStatus = 'ranked'|'no_evidence'|'unindexed'|'needs_review'|'outside_requirements'
 export interface JobCandidatePage extends Omit<ResumeCardPage,'items'> {
-  job: Pick<Job,'id'|'title'|'status'|'department_name'|'requirements'|'required_skills'|'experience_tags'|'recruitment_start'|'recruitment_end'|'target_date'>
-  items: (ResumeCard & {match_percent:number|null})[]
+  job: JobPostingReference & Pick<Job,'id'|'title'|'status'|'department_name'|'jd'|'requirements'|'required_skills'|'experience_tags'|'recruitment_start'|'recruitment_end'|'target_date'>
+  items: (ResumeCard & {match_percent:number|null; retrieval_status?:RetrievalStatus; skill_coverage?:number|null})[]
   matched_requirements:number
+  unassigned_total:number
+  retrieval?:{source:RetrievalSource; eligible:number; indexed:number}
+}
+export interface JobEvidenceSource {
+  span_no:number; locator:Evidence['locator']
+}
+export interface JobEvidenceBlock {
+  record_no:number; kind:string; text:string; locations:JobEvidenceSource[]
+}
+export interface JobEvidenceRequirement {
+  id:number; kind:'role'|'duty'|'qualification'|'qualification_check'|'skill'|'degree'|'months'; text:string
+  status:'related'|'supported'|'unverified'|'not_met'|'not_checked'
+  mandatory:boolean; weight:number; scopes:string[]; method:'keyword'|'vector'|'structured'|null
+  evidence_kind:string|null; matched_skill:string|null; record_no:number|null; points:number|null
+}
+export interface JobEvidenceReport {
+  source:RetrievalSource; version_id:number|null; status:RetrievalStatus|null
+  skill_coverage:number|null; score:JobMatchScore|null
+  requirements:JobEvidenceRequirement[]; evidence_blocks:JobEvidenceBlock[]
 }

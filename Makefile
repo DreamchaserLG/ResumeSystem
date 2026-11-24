@@ -44,6 +44,7 @@ logs: ## 查看 API 与 worker 日志
 SHOWCASE_DB ?= resume_showcase
 
 showcase: ## 载入演示数据集（403 份简历 + 已解析结果）并启动，数据落在 resume_showcase
+	@test -f db/showcase.sql.gz || { echo "缺少演示数据包：请先把 resume/、showcase/storage/、db/showcase.sql.gz 放回（仓库不随附简历）"; exit 1; }
 	docker compose build api
 	docker compose up -d --wait pg redis
 	cd frontend && npm ci --no-audit --no-fund && npm run build

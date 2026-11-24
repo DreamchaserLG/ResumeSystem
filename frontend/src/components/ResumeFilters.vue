@@ -25,13 +25,14 @@ export function filterSearchBody(filters:FilterSelection) {
 </script>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { ElButton, ElSlider } from 'element-plus'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElButton, ElInput, ElSlider } from 'element-plus'
 import { ChevronBackOutline } from '@vicons/ionicons5'
-import type { Job } from '@/api/hr'
+import { api } from '@/api/client'
+import type { CapabilityMatch, CapabilityTag, Job } from '@/api/hr'
 
 const props = defineProps<{ title:string; selected:FilterSelection; available:string[]; departments:{id:number;name:string}[];
-  jobs:Job[]; requiresDepartment:boolean; capabilities:{code:string;name:string}[] }>()
+  jobs:Job[]; requiresDepartment:boolean }>()
 const emit = defineEmits<{ close:[]; apply:[filters:FilterSelection] }>()
 const panel = ref<HTMLElement>()
 const salaryMax = 100000
@@ -44,6 +45,7 @@ const draft = ref<Partial<Record<Facet, string[]>>>(
 )
 
 type Choice = { facet:Facet; value:string; label:string }
+type FilterGroup = { key:Facet; title:string; options:Choice[] }
 function choices(facet:Facet, values:[string, string][]): Choice[] {
   return values.map(([value,label]) => ({facet,value,label}))
 }
@@ -53,16 +55,96 @@ const degrees = computed(() => props.available.includes('degree') ? choices('deg
 const schools = computed(() => props.available.includes('school') ? choices('school', [
   ['is_985','985'], ['is_211','211'], ['is_double_first_class','双一流'], ['study_abroad','留学'], ['qs_top100','QS 前 100'],
 ]) : [])
-const groups = computed(() => [
+const groups = computed(() => ([
   { key:'school', title:'学校级别', options:schools.value },
   { key:'domain', title:'经历方向', options:props.available.includes('domain') ? choices('domain', [
     ['technology','技术'], ['finance','金融'], ['legal','法律'], ['consumer','生活服务'],
     ['human_resources','人力资源'], ['healthcare','医疗'], ['biomed','生物医药'],
   ]) : [] },
-  { key:'capability', title:'能力标签', options:props.available.includes('capability') ? choices('capability',
-    props.capabilities.map((cap):[string,string] => [cap.code, cap.name])
-  ) : [] },
-].filter(group=>group.options.length))
+] satisfies FilterGroup[]).filter(group=>group.options.length))
+const capabilityEnabled = computed(() => props.available.includes('capability'))
+const tagQuery = ref('')
+const tagLabels = ref<Record<string, string>>({})
+const tagMatches = ref<Record<string, number | null>>({})
+const tagsLoading = ref(false)
+const tagsUnmatched = ref(false)
+const dictionaryMatch = ref(false)
+const tagError = ref('')
+const tagThreshold = ref(.5)
+let tagRequest = 0
+let tagTimer: ReturnType<typeof setTimeout> | undefined
+let tagController: AbortController | undefined
+
+function rememberTags(items: CapabilityTag[]) {
+  for (const item of items) tagLabels.value[item.code] = item.name
+}
+
+watch(capabilityEnabled, async enabled => {
+  if (!enabled || !draft.value.capability?.length) return
+  try {
+    rememberTags((await api.get<{items:CapabilityTag[]}>('/hr/capability-tags?full=true')).items)
+  } catch (cause) {
+    if (!tagQuery.value.trim()) tagError.value = (cause as Error).message
+  }
+}, { immediate:true })
+
+function resetTagRequest() {
+  clearTimeout(tagTimer)
+  tagController?.abort()
+  return ++tagRequest
+}
+
+function scheduleTagMatch(immediate = false) {
+  const request = resetTagRequest()
+  const query = tagQuery.value.trim()
+  tagsLoading.value = Boolean(query)
+  tagsUnmatched.value = false
+  dictionaryMatch.value = false
+  tagError.value = ''
+  if (!query) {
+    tagMatches.value = {}
+    draft.value.capability = []
+  } else if (immediate) {
+    void matchTags(query, request)
+  } else {
+    tagTimer = setTimeout(() => void matchTags(query, request), 400)
+  }
+}
+
+async function matchTags(query: string, request: number) {
+  const controller = tagController = new AbortController()
+  try {
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(9000)])
+    const { items, threshold, mode } = await api.post<{items:CapabilityMatch[]; threshold:number; mode?:'dictionary'}>(
+      '/hr/capability-tags/match', {query}, signal)
+    if (request !== tagRequest) return
+    rememberTags(items)
+    tagThreshold.value = threshold
+    dictionaryMatch.value = mode === 'dictionary'
+    tagMatches.value = Object.fromEntries(items.map(item => [item.code, item.similarity]))
+    draft.value.capability = items.map(item => item.code)
+    tagsUnmatched.value = !items.length
+  } catch (cause) {
+    if (request === tagRequest) tagError.value = (cause as Error).name === 'TimeoutError'
+      ? '本次匹配超时，按回车重试' : (cause as Error).message
+  } finally {
+    if (request === tagRequest) tagsLoading.value = false
+  }
+}
+watch(tagQuery, () => scheduleTagMatch(), { flush:'sync' })
+onBeforeUnmount(resetTagRequest)
+
+function clearCapabilities() {
+  if (tagQuery.value) tagQuery.value = ''
+  else scheduleTagMatch()
+}
+
+function capabilityLabel(code: string) {
+  return tagLabels.value[code] || '已选能力'
+}
+
+const percentage = (similarity: number) => `${(similarity * 100).toFixed(1).replace(/\.0$/, '')}%`
+
 const draftDepartment = ref(props.selected.department)
 const draftJobs = ref([...(props.selected.jobs ?? [])])
 const jobChoices = computed(()=>props.jobs.filter(job=>!props.requiresDepartment || job.department_id===draftDepartment.value))
@@ -102,6 +184,7 @@ function rangeText(range:[number,number], ceiling:number, format:(n:number)=>str
   return format(min) + ' – ' + format(max)
 }
 function clear() {
+  clearCapabilities()
   draft.value = {}
   selectDepartment()
   salary.value = [0, salaryMax]
@@ -170,18 +253,38 @@ onMounted(() => panel.value?.focus({ preventScroll:true }))
       </section>
       <section v-for="group in groups" :key="group.key" class="filter-group" :aria-labelledby="'filter-'+group.key">
         <header class="group-heading"><h3 :id="'filter-'+group.key">{{ group.title }}</h3>
-          <button type="button" :aria-pressed="!draft[group.options[0].facet]?.length"
-            @click="draft[group.options[0].facet]=[]">全部</button></header>
-        <div class="filter-choices" :class="{ 'wide-choices':group.key==='capability' }">
+          <button type="button" :aria-pressed="!draft[group.key]?.length"
+            @click="draft[group.key]=[]">全部</button></header>
+        <div class="filter-choices">
           <button v-for="choice in group.options" :key="choice.value" type="button" class="facet-choice"
             :aria-pressed="draft[choice.facet]?.includes(choice.value) ?? false" :title="choice.label"
             @click="toggle(choice)">{{ choice.label }}</button>
         </div>
       </section>
+      <section v-if="capabilityEnabled" class="filter-group" aria-labelledby="filter-capability">
+        <header class="group-heading"><h3 id="filter-capability">能力标签</h3>
+          <button type="button" :aria-pressed="!draft.capability?.length && !tagQuery" @click="clearCapabilities">全部</button>
+        </header>
+        <ElInput v-model="tagQuery" maxlength="120" aria-label="输入能力自动匹配标签" placeholder="输入能力，如绩效管理或数据库" clearable
+          @keyup.enter="tagQuery.trim() && scheduleTagMatch(true)"/>
+        <p v-if="tagsLoading" class="capability-hint" role="status">正在匹配能力标签…</p>
+        <p v-else-if="tagError" class="capability-error" role="alert">{{ tagError }}</p>
+        <p v-else-if="dictionaryMatch" class="capability-hint" role="status">
+          {{ tagsUnmatched ? '标签词库没有匹配项，可以换个关键词或按回车重试' : '已按标签词库匹配，可直接筛选' }}
+        </p>
+        <p v-else-if="tagsUnmatched" class="capability-hint" role="status">没有相似度达到 {{ percentage(tagThreshold) }} 的标签</p>
+        <div v-if="draft.capability?.length" class="capability-tags">
+          <button v-for="code in draft.capability" :key="code" type="button" class="facet-choice"
+            :aria-label="`移除${capabilityLabel(code)}标签`" :title="capabilityLabel(code)" aria-pressed="true"
+            @click="draft.capability=draft.capability?.filter(tag=>tag!==code)">
+            {{ capabilityLabel(code) }}<span v-if="typeof tagMatches[code] === 'number'"> {{ percentage(tagMatches[code]!) }}</span> ×
+          </button>
+        </div>
+      </section>
     </div>
     <footer class="local-filter-actions">
       <ElButton @click="clear">清除</ElButton>
-      <ElButton type="primary" @click="apply">确定</ElButton>
+      <ElButton type="primary" :disabled="tagsLoading" @click="apply">确定</ElButton>
     </footer>
   </section>
 </template>
@@ -199,8 +302,12 @@ onMounted(() => panel.value?.focus({ preventScroll:true }))
 .filter-group:last-child {border-bottom:0}
 .group-heading {margin-bottom:10px}
 .group-heading h3 {font-size:13px}
-.group-heading button {border:1px solid #e1e8eb;border-radius:5px;padding:3px 7px;background:#fff;font-size:11px;cursor:pointer;color:var(--hire-muted)}
+.group-heading button:not(.el-button) {border:1px solid #e1e8eb;border-radius:5px;padding:3px 7px;background:#fff;font-size:11px;cursor:pointer;color:var(--hire-muted)}
 .group-heading button[aria-pressed=true] {border-color:#badbd4;background:#edf8f5;color:var(--hire-accent-dark)}
+.capability-tags {display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.capability-tags .facet-choice {min-height:28px;padding-inline:7px}
+.capability-error {color:#9e362d;font-size:12px;margin-top:8px}
+.capability-hint {color:var(--hire-muted);font-size:12px;margin-top:8px}
 .filter-choices {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
 .wide-choices {grid-template-columns:repeat(2,minmax(0,1fr))}
 .facet-choice {cursor:pointer;min-height:33px;min-width:0;padding:4px 5px;border:1px solid #e2eaec;border-radius:7px;

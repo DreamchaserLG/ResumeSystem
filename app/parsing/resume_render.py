@@ -349,25 +349,26 @@ def _heading(document, title):
     title = title[:32]
     table = document.add_table(rows=1, cols=2)
     table.autofit = False
-    label_width = min(65, max(26, 5.3 * len(title)))
+    title_units = sum(1 if east_asian_width(char) in {"W", "F"} else 0.65 for char in title)
+    label_width = min(90, max(10, (11 * title_units + 12) / Mm(1).pt))
     row = table.rows[0]
     row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))
     for column, cell, width in zip(table.columns, row.cells, (label_width, _PAGE_TEXT_WIDTH - label_width)):
         column.width = cell.width = Mm(width)
-    label, rule = row.cells
+    label = row.cells[0]
     shading = OxmlElement("w:shd")
     shading.set(qn("w:fill"), _BLUE)
     label._tc.get_or_add_tcPr().append(shading)
     borders = OxmlElement("w:tcBorders")
     border = OxmlElement("w:bottom")
-    for key, value in {"val": "single", "sz": "5", "color": "A7B6CA"}.items():
+    for key, value in {"val": "single", "sz": "4", "color": _BLUE}.items():
         border.set(qn("w:" + key), value)
     borders.append(border)
-    rule._tc.get_or_add_tcPr().append(borders)
+    row.cells[1]._tc.get_or_add_tcPr().append(borders)
     for cell in row.cells:
         cell.paragraphs[0].style = "Resume Section"
-        cell.paragraphs[0].paragraph_format.space_before = Pt(3)
-        cell.paragraphs[0].paragraph_format.space_after = Pt(3)
+        cell.paragraphs[0].paragraph_format.space_before = Pt(2)
+        cell.paragraphs[0].paragraph_format.space_after = Pt(2)
     label.paragraphs[0].add_run(title)
 
 
@@ -400,13 +401,17 @@ def _education_line(document, school, degree, period):
             run.font.color.rgb = RGBColor.from_string("526477")
 
 
-def render_resume_docx(record: Mapping, *, approved_sections: Mapping | None = None, hide_identity: bool = False) -> bytes:
+def render_resume_docx(
+    record: Mapping, *, approved_sections: Mapping | None = None, hide_identity: bool = False,
+    mask_body_contacts: bool = False,
+) -> bytes:
     """Return a DOCX from a single display-approved SQL row.
 
     Experiences accept JSON strings, lists, objects or plain text. Pass other
     HR-approved sections as {Chinese heading: values}. Do not pass raw vendor
     records as approved sections. hide_identity omits header identifiers and
-    masks common contact patterns in body text. It retains career history.
+    masks common contact patterns in body text. mask_body_contacts can mask
+    that text while keeping the name and separately supplied header contacts.
     """
     document = Document()
     _formatting(document)
@@ -416,7 +421,7 @@ def render_resume_docx(record: Mapping, *, approved_sections: Mapping | None = N
     document.add_paragraph(identity, "Resume Name").alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     def safe(text):
-        return _CONTACT.sub("[已隐藏]", text) if hide_identity else text
+        return _CONTACT.sub("[已隐藏]", text) if hide_identity or mask_body_contacts else text
 
     current = _first(record, "current_position", "currentPosition")
     target = _first(record, "target_role", "desired_position", "desiredPosition")
@@ -436,7 +441,8 @@ def render_resume_docx(record: Mapping, *, approved_sections: Mapping | None = N
             ("手机", _first(record, "phone", "mobile")), ("邮箱", _first(record, "email")), ("主页", _first(record, "website")),
         ) if value)
     if details:
-        document.add_paragraph(safe("  ·  ".join(details)), "Resume Meta").alignment = WD_ALIGN_PARAGRAPH.CENTER
+        header_details = "  ·  ".join(details)
+        document.add_paragraph(safe(header_details) if hide_identity else header_details, "Resume Meta").alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     extras = _decode(record.get("extras"))
     extras = extras if isinstance(extras, Mapping) else {}

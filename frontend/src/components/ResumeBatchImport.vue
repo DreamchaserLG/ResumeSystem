@@ -35,6 +35,7 @@ function pick(selection:File[]) {
   if(!selection.length) return
   if(single.value && selection.length!==1){fileError.value='请选择一份简历。';return}
   if(selection.length>500){fileError.value='一次最多选择 500 个文件。请拆分文件夹后重试。';return}
+  if(single.value && items.value.some(row=>row.id)) priorApplication.value=''
   items.value=selection.map(file=>{
     const valid=supported.test(file.name) && file.size>0 && file.size<=20*1024*1024
     return {file,path:file.webkitRelativePath || file.name,key:crypto.randomUUID(),state:valid?'ready':'unsupported',

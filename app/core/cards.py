@@ -1,4 +1,5 @@
 """Scoped list projection and AND-filtering for the resume workspace."""
+from collections import defaultdict
 from datetime import datetime
 from typing import Annotated, Literal
 import re
@@ -12,6 +13,9 @@ from app.core.extraction import norm
 from app.core.job_skills import catalog_for, job_skill_requirements
 from app.core.recruitment import stage
 from app.core.screening import SearchInput, VISIBLE, _like, _months, _terms, _trusted
+from app.core.semantic_search import search_condition
+
+from app.core.vector_retrieval import retrieval
 
 SCHOOL_FILTERS = ("is_985", "is_211", "is_double_first_class", "study_abroad", "qs_top100")
 
@@ -35,13 +39,15 @@ class CardQuery(BaseModel):
     parse_status: Literal["failed","parsing"] | None = None
     stalled: bool = False
     stage_key: str | None = Field(default=None, pattern=r"^(review|progress|rejected|hired|interview:[1-9][0-9]{0,17})$")
+    candidate_name: str = Field(default="", max_length=80, pattern=r"^[^\x00]*$")
+    semantic_query: str = Field(default="", max_length=80, pattern=r"^[^\x00]*$")
     query: str = Field(default="", max_length=200)
     tags: list[str] = Field(default_factory=list, max_length=10)
     facets: dict[Literal["degree","experience","school","domain","salary","capability"], list[str]] = Field(default_factory=dict, max_length=6)
     job_ids: list[Annotated[int,Field(gt=0)]] = Field(default_factory=list, max_length=100)
     followup: Literal["recorded","unrecorded"] | None = None
     followup_values: list[Annotated[str,Field(min_length=1,max_length=1000)]] = Field(default_factory=list,max_length=30)
-    sort: Literal["recent","match"] = "recent"
+    sort: Literal["recent","match","relevance"] = "recent"
     salary_min: int | None = Field(default=None,ge=0,le=1000000)
     salary_max: int | None = Field(default=None,ge=0,le=1000000)
     experience_min_months: int | None = Field(default=None,ge=0,le=1200)
@@ -128,7 +134,20 @@ def _card_matches(session, rows, include_skills):
     return result
 
 
-def cards(session, auth, request, *, show_match=False, card_matches=False, talent_pool=False, talent_status=None):
+def workspace_matches(session, departments, applications):
+    jobs = defaultdict(list)
+    for row in applications:
+        if row.job_id is not None and row.version_id is not None:
+            jobs[row.job_id].append(row.id)
+    matches = {}
+    for job_id, ids in jobs.items():
+        result = retrieval(session, departments, job_id, workspace_ids=ids)
+        matches.update((app_id, item) for app_id, item in result["candidates"].items() if item["score"] is not None)
+    return matches
+
+
+def cards(session, auth, request, *, show_match=False, card_matches=False, talent_pool=False, talent_status=None,
+          ranked_ids=None, unassigned_only=False):
     session.execute(text("SET LOCAL jit=off"))
     policy = session.execute(text("SELECT policy_version FROM search_state WHERE singleton")).scalar_one()
     allowed = set(session.execute(text("""
@@ -247,6 +266,9 @@ def cards(session, auth, request, *, show_match=False, card_matches=False, talen
     sort = ("evidence_order DESC NULLS LAST,id DESC" if rank != "NULL::bigint" else "id DESC")
     # 人才库置顶：已入人才库的候选人优先展示，其余按原有排序
     sort = "in_talent DESC NULLS LAST, " + sort
+    if ranked_ids is not None:
+        params["ranked_ids"] = ranked_ids
+        sort = "array_position(CAST(:ranked_ids AS bigint[]),id) NULLS LAST, " + sort
     talent_join = ("JOIN talent t ON t.source_application_id=a.id" if talent_pool
                    else "LEFT JOIN talent t ON t.candidate_id=a.candidate_id")
     if talent_pool:
@@ -282,6 +304,15 @@ def cards(session, auth, request, *, show_match=False, card_matches=False, talen
         raise HTTPException(422, "最多可输入 8 个关键词")
     _, groups = _terms(session, SearchInput(keywords=words)) if words else (0, [])
     where = []
+    semantic_clause, semantic_degraded = search_condition(request.semantic_query, allowed, params)
+    if semantic_clause:
+        where.append(semantic_clause)
+    candidate_name = request.candidate_name.strip()
+    if candidate_name:
+        if ("profile.name", "search") not in allowed:
+            raise HTTPException(403, "姓名搜索未获授权")
+        params["candidate_name"] = _like(candidate_name)
+        where.append("q.name ILIKE :candidate_name ESCAPE '!'")
     for index, (word, terms) in enumerate(groups):
         params[f"q{index}"] = [_like(term) for term in terms]
         params[f"exact{index}"] = _like(word)
@@ -349,6 +380,7 @@ def cards(session, auth, request, *, show_match=False, card_matches=False, talen
         LEFT JOIN resume_version v ON v.id=coalesce(a.pending_version_id,a.active_version_id,a.submitted_version_id)
         LEFT JOIN LATERAL (SELECT body FROM application_followup n WHERE n.application_id=a.id ORDER BY id DESC LIMIT 1) recent ON true
         WHERE {VISIBLE} AND (CAST(:application AS bigint) IS NULL OR a.id=:application)
+          {"AND a.job_id IS NULL AND a.status<>'closed'" if unassigned_only else ""}
           AND (CAST(:job AS bigint) IS NULL OR a.job_id=:job)
           AND (cardinality(CAST(:jobs AS bigint[]))=0 OR a.job_id=ANY(CAST(:jobs AS bigint[])))
           AND (cardinality(CAST(:followup_values AS text[]))=0 OR recent.body=ANY(CAST(:followup_values AS text[])))
@@ -390,15 +422,31 @@ def cards(session, auth, request, *, show_match=False, card_matches=False, talen
         if talent_status:
             status_filter = "WHERE talent_status=:talent_status"
             params["talent_status"] = talent_status
+    scored = {}
+    if request.sort == "relevance" and not talent_pool:
+        applications = session.execute(text(sql + f" SELECT id,job_id,version_id FROM {source}"), params)
+        scored = workspace_matches(session, auth.departments, applications)
+        params["scored_ids"] = list(scored)
+        params["scored_scores"] = [item["score"]["total"] for item in scored.values()]
+        params["scored_versions"] = [item["version_id"] for item in scored.values()]
+        sql += f""", scored AS (
+            SELECT a.*,m.score AS relevance_score
+            FROM {source} a LEFT JOIN unnest(CAST(:scored_ids AS bigint[]),CAST(:scored_versions AS bigint[]),
+                                           CAST(:scored_scores AS double precision[])) m(id,version_id,score)
+                     ON m.id=a.id AND m.version_id=a.version_id
+        )"""
+        source = "scored"
+        sort = "relevance_score DESC NULLS LAST,id DESC"
     sql += f", slice AS (SELECT *,count(*) OVER() AS total FROM {source} {status_filter} ORDER BY {sort} LIMIT :size OFFSET :offset)"
-    sql += metadata.replace("{source}","slice") + " ORDER BY " + sort
+    # Qualify the ID used by the optional semantic order after the metadata joins.
+    sql += metadata.replace("{source}","slice") + " ORDER BY " + sort.replace(",id) NULLS LAST", ",a.id) NULLS LAST")
     rows = session.execute(text(sql), params).mappings().all()
     total = rows[0]["total"] if rows else 0
     if talent_pool:
         total = counts.get(talent_status, 0) if talent_status else sum(counts.values())
     elif not rows and request.page > 1:
-        total = cards(session, auth, request.model_copy(update={"page": 1, "size": 1}))["total"]
-    matches = _card_matches(session, rows, preview("skill.name")) if card_matches and ("skill.name", "filter") in allowed else {}
+        total = session.execute(text(sql.rsplit(", slice AS (", 1)[0] + f" SELECT count(*) FROM {source}"), params).scalar_one()
+    matches = _card_matches(session, rows, preview("skill.name")) if card_matches and request.sort != "relevance" and ("skill.name", "filter") in allowed else {}
     response = []
     for row in rows:
         item = dict(row)
@@ -406,7 +454,12 @@ def cards(session, auth, request, *, show_match=False, card_matches=False, talen
         hits = item.pop("evidence_order", None)
         if show_match:
             item["match_percent"] = round(100 * hits / requirement_count) if hits is not None and requirement_count else None
-        if card_matches:
+        if card_matches and request.sort == "relevance":
+            current = scored.get(item["id"]) if item.pop("relevance_score", None) is not None else None
+            item["match_score"] = current["score"] if current else None
+            item["match_percent"] = current["score"]["total"] if current else None
+            item["match_skills"] = current["match_skills"] if current and preview("skill.name") else []
+        elif card_matches:
             item.update(matches.get(item["id"], {"match_percent": None, "match_skills": []}))
         item["stage"] = stage(item.pop("recruitment_stage"), item.pop("interview_round_id"), item.pop("interview_round_name"))
         item["page_count"] = item["page_count"] or int(item["legacy_preview"])
@@ -439,4 +492,5 @@ def cards(session, auth, request, *, show_match=False, card_matches=False, talen
             **({"counts": counts} if talent_pool else {}),
             "items":response,"total":total,"page":request.page,"size":request.size,
             "available_facets":[category for category in facet_options if (field_map[category],"filter") in allowed],
-            "school_filters": ("education.school_tags", "filter") in allowed}
+            "school_filters": ("education.school_tags", "filter") in allowed,
+            "semantic_degraded": semantic_degraded}

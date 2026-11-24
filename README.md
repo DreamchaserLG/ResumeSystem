@@ -47,10 +47,42 @@ AI 分析的思考流可在服务端离线英译中：首次部署运行 `python
 
 同一账号只保留一个有效会话。登录成功时，Redis 为该账号保存唯一的会话指纹和有效期。若已有会话，服务端在校验密码后提示确认；只有确认当前那次会话后，才原子替换它。旧页面下一次请求、重新聚焦或定时校验时回到登录页。退出请求也比对会话指纹，旧页面无法注销新会话。
 
-点击岗位名称进入该岗位的候选人页，资料与编辑在岗位行的操作菜单中。岗位可以分别维护职责、任职要求、必备技能、经验标签与招聘起止日期。岗位候选人页的百分比只表示已识别要求的简历证据命中率，同分按投递时间排序；没有可核对的要求时显示「待分析」。该页排序暂用规则，不依赖 LLM。现有数据库需应用 `021_job_hiring_requirements.sql`。
+点击岗位名称进入候选人页，可查看岗位职责、任职要求及招聘来源，也可展开候选人的逐项原文证据。岗位管理支持按职能分类筛选。招聘网站参考稿供召回和人工复核使用。学历、年限和资质等条件由 HR 确认。
+
+### 本地岗位与简历索引
+
+PostgreSQL 16 服务带 pgvector。迁移 `028_resume_vector_retrieval.sql` 至 `030_reference_recruitment_configuration.sql` 增加岗位要求、经历切片、原文定位和参考排期。用工、实习和项目各以单条经历为父记录，512 token 以内整体编码，超长优先按原文条目拆分，条目内部的强制窗口保留 51 token 重叠。
+
+岗位候选人页在授权部门、岗位和有效简历版本范围内计算得分，按总分从高到低分页。总分为职责分的 65% 加技能分的 35%。每项职责取允许范围内最相近的经历窗口，当前将 BGE-M3 的余弦值限制在 0 到 1 后用于职责试算。技能按词典或授权经历中的规范词项举证，必备权重 2、加分权重 1，待核实按 0 计。报告可从逐条要求跳到对应的完整脱敏经历，再打开对应的简历原页。同部门未关联的简历也可在岗位候选人页单独试算。
+
+在具备本地 BGE-M3 权重、PyTorch、Transformers 和 Psycopg 3 的 Python 环境中运行以下命令。将 `DATABASE_URL` 设为目标库的迁移账号连接地址。导入公开参考稿时按部门和岗位名称匹配，数据库中已有人工编辑的内容会保留。
+
+```bash
+python -m migrations.migrate
+python -m scripts.import_job_posting_references ../data/岗位参考JD-20261124.json
+python -m scripts.backfill_retrieval --model-dir ../models/bge-m3
+```
+
+发布简历新版本或修改岗位后，可重跑索引命令增量更新。岗位配置可通过 `--export-jobs` 导出。对 HR 已确认的岗位要求，在对应快照的 `requirements` 中录入带 `kind` 和 `text` 的条目。可用类型包括 `duty`、`skill`、`degree` 和 `months`，后两种须填 `minimum`。用 `--approve` 导入确认配置并回填索引。
+
+### 简历语义搜索与能力标签
+
+简历管理和人才库共用语义搜索。姓名和岗位别名走授权字段检索，岗位语义查询和授权经历切片使用同一套本地 BGE-M3 向量。“人力”“HR”“HRBP”和“Human Resources”共享人力资源方向的召回。能力匹配取自然语言输入与能力词典的余弦相似度，保留 50% 及以上的结果，优先生成与最高分相差 10 个百分点以内的前三个标签。
+
+在模型环境中启动常驻编码进程。Compose 的 API 通过 `./storage/embedding` 下的 Unix socket 调用进程，宿主运行账号需与容器应用账号（UID 1000）共享 socket 的组读写权限。
+
+```bash
+python -m scripts.embedding_server --socket ./storage/embedding/model.sock --model-dir ../models/bge-m3 --threads 2
+```
+
+使用以下命令监听简历发布和岗位变更，在事务提交后启动增量索引。每个已完成的批次即时写回。空闲时每三分钟补查一次，处理服务离线期间的变更。`DATABASE_URL` 使用迁移账号连接地址。
+
+```bash
+python -m scripts.backfill_retrieval --follow --model-dir ../models/bge-m3 --embedding-socket ./storage/embedding/model.sock
+```
 
 ## 演示数据集
 
-仓库内提交了一套可直接运行的演示数据：11 个部门、24 个岗位、403 份真实简历，含原件、脱敏预览、结构化字段与原文证据，以及可恢复的数据库快照 `db/showcase.sql.gz`。clone 后执行 `make showcase` 即可打开看到岗位与候选人，不需要自己准备简历。
+仓库只承载代码。演示数据（11 个部门、24 个岗位、403 份简历的原件、脱敏预览、结构化字段、原文证据，以及数据库快照）含真实候选人信息，按内部途径单独交付，不随仓库发布。
 
-数据集构成、恢复方式与从原始简历重建的步骤见 [演示数据集](docs/演示数据集.md)。`resume/通用` 的 350 份未指定岗位简历不入库，也不随仓库发布。
+拿到数据包后，把它放回 `resume/`、`showcase/storage/` 和 `db/showcase.sql.gz` 三处，再执行 `make showcase` 即可载入并打开岗位与候选人。数据集构成、恢复方式与重建步骤见 [演示数据集](docs/演示数据集.md)。

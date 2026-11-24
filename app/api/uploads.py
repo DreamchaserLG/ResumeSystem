@@ -64,7 +64,7 @@ async def import_resume(
     # ① 岗位必须属于授权部门
     with rls_session(departments=auth.departments, user_id=auth.user_id) as s:
         job = s.execute(
-            text("SELECT id, department_id FROM job WHERE id = :i AND status='open'"),
+            text("SELECT id, department_id FROM job WHERE id = :i AND status='open' AND NOT hidden"),
             {"i": job_id},
         ).fetchone()
         if job is None:
@@ -97,7 +97,7 @@ async def import_resume(
         job = cn.execute(
             text("""
                 SELECT j.id,j.department_id FROM job j JOIN department d ON d.id=j.department_id
-                WHERE j.id=:id AND j.status='open' AND d.status='active'
+                WHERE j.id=:id AND j.status='open' AND NOT j.hidden AND d.status='active'
                   AND j.department_id=ANY(CAST(:deps AS bigint[])) FOR SHARE OF j,d
             """),
             {"id": job_id, "deps": departments},

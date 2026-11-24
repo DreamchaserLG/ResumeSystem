@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     recruiting_llm_key: SecretStr | None = None
 
     storage_root: str = "./storage"
+    embedding_socket: str = "./storage/embedding/model.sock"
     resume_drop_dir: str = ""
     resume_drop_hour: int = 3
     session_ttl_seconds: int = 8 * 3600

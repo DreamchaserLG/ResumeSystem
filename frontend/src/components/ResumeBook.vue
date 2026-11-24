@@ -4,7 +4,7 @@ import { ExpandOutline, ContractOutline } from '@vicons/ionicons5'
 import { api } from '@/api/client'
 import type { ResumeCard } from '@/api/hr'
 
-const props = defineProps<{ resume: ResumeCard; avatarUrl?: string; embedded?: boolean; pdfOriginal?: boolean }>()
+const props = defineProps<{ resume: ResumeCard; avatarUrl?: string; embedded?: boolean; pdfOriginal?: boolean; initialPage?: number }>()
 const emit = defineEmits<{ close: []; pageRatio: [ratio: number]; fullscreenChange: [active: boolean] }>()
 const fullscreen = ref(false)
 const reader = ref<HTMLElement>()
@@ -102,13 +102,15 @@ async function getPage(page: number, epoch: number) {
   images.set(page, url)
   return url
 }
-watch(() => [props.resume.id, props.resume.version_id, count.value], async () => {
-  clear(); current.value = 1; target.value = 1
+watch(() => [props.resume.id, props.resume.version_id, count.value, props.initialPage], async () => {
+  clear()
+  const page = Math.min(Math.max(props.initialPage ?? 1, 1), count.value || 1)
+  current.value = page; target.value = page
   fitPage.value=true; zoom.value=1
   if (!count.value || !props.resume.version_id) return
   const epoch = generation
   loading.value = true
-  try { active.value = await getPage(1, epoch) }
+  try { active.value = await getPage(page, epoch) }
   catch (e) { if (epoch === generation) error.value = (e as Error).message }
   finally { if (epoch === generation) loading.value = false }
 }, { immediate: true })

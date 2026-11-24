@@ -13,8 +13,11 @@ node_modules/
 .pnpm-store/
 dist/
 *.tsbuildinfo
-# 演示数据集：只发布表格映射到的 403 份，通用/ 不入库也不上传
-/resume/通用/
+# 简历与演示数据一律不入库：仓库只承载代码。
+# 演示简历、解析存储对象和数据库快照含真实候选人信息，需单独保管。
+/resume/
+/showcase/storage/
+/db/showcase.sql.gz
 
 /storage/
 /models/translation/

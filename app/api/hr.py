@@ -1,6 +1,8 @@
 """Department HR workflow for scoped applications and evidence."""
 from datetime import date, datetime, timezone
 from typing import Annotated, Literal
+from unicodedata import normalize
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -10,10 +12,12 @@ from sqlalchemy import text
 from app.core.auth import AuthContext, require_auth, require_recruitment_access
 from app.core.cards import CardQuery, cards, education_summary
 from app.core.db import owner_engine, rls_session
-from app.core.extraction import masked
+from app.core.extraction import masked, norm
+from app.core.query_embedding import EmbeddingUnavailable
 from app.core.recruitment import DEFAULT_ROUNDS, RoundInput, StageCode, expect_revision, rounds_for, save_rounds, stage
 from app.core.resume_pipeline import bump_search, insert
 from app.core.screening import VISIBLE, SearchInput, read_evidence, search
+from app.core.semantic_search import CAPABILITY_THRESHOLD, match_capabilities
 from app.core.storage import open_file
 from app.core.workflow import (application_lock, audit, cleanup_files, corrected_version,
                                fresh_departments, new_version, purge_application, schedule_parse)
@@ -25,7 +29,7 @@ BASE = f"""
            a.submitted_job_id,a.recruitment_stage,a.interview_round_id,a.workflow_version,ir.name AS interview_round_name,
            a.active_version_id,a.pending_version_id,a.submitted_at,
            v.status AS parse_status,v.extractor_version,v.fail_reason,
-           a.submitted_version_id,
+           a.submitted_version_id,a.original_url,
            (SELECT p.name FROM resume_profile p JOIN field_usage_policy f ON f.field_key='profile.name'
               AND f.policy_version=st.policy_version AND f.purpose='preview' AND f.allowed
               WHERE p.version_id=a.active_version_id LIMIT 1) AS name
@@ -61,6 +65,14 @@ class Transfer(Reason):
     workflow_version: int = Field(gt=0)
 
 
+class CapabilityTagInput(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class CapabilityMatchInput(BaseModel):
+    query: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
+
+
 class JobInput(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     jd: str = Field(default="", max_length=4000)
@@ -76,6 +88,7 @@ class JobInput(BaseModel):
     target_date: date | None = None
     recruitment_type: Literal["social","campus","internship","internal"] = "social"
     recruiter_name: str = Field(default="",max_length=80)
+    recruiter_user_id: int | None = Field(default=None, gt=0)
 
 
 def _note(value):
@@ -108,6 +121,68 @@ def options(auth: AuthContext = Depends(require_recruitment_access)):
         """)).mappings().all()
     return {"departments": [dict(x) for x in departments], "hr_department_ids": auth.departments, "skills": skills,
             "school_tags": [dict(x) for x in tags], "capabilities": [dict(x) for x in capabilities]}
+
+
+def _require_capability_filter_access(connection):
+    allowed = connection.execute(text("""
+        SELECT 1 FROM search_state s
+        JOIN field_usage_policy p ON p.policy_version=s.policy_version
+        JOIN field_definition f USING (field_key)
+        WHERE s.singleton AND p.field_key='skill.name' AND p.purpose='filter' AND p.allowed AND f.status='active'
+    """)).scalar_one_or_none()
+    if allowed is None:
+        raise HTTPException(403, "能力标签筛选未获授权")
+
+
+def _recent_capability_tags(connection):
+    return {"items": [dict(row) for row in connection.execute(text("""
+        SELECT code,name FROM capability_group
+        ORDER BY created_at DESC NULLS LAST,display_order,code LIMIT 10
+    """)).mappings()]}
+
+
+@router.get("/capability-tags")
+def list_capability_tags(full: bool = False, auth: AuthContext = Depends(require_recruitment_access)):
+    with _scope(auth) as session:
+        _require_capability_filter_access(session)
+        if full:
+            return {"items": [dict(row) for row in session.execute(text("""
+                SELECT code,name FROM capability_group ORDER BY display_order,code
+            """)).mappings()]}
+        return _recent_capability_tags(session)
+
+
+@router.post("/capability-tags/match")
+def match_capability_tags(body: CapabilityMatchInput, auth: AuthContext = Depends(require_recruitment_access)):
+    value = norm(body.query)
+    with _scope(auth) as session:
+        _require_capability_filter_access(session)
+        if not value:
+            return {"items": [], "threshold": CAPABILITY_THRESHOLD}
+        try:
+            return match_capabilities(session, value)
+        except EmbeddingUnavailable as exc:
+            raise HTTPException(503, "能力标签匹配暂不可用，请稍后重试") from exc
+
+
+@router.post("/capability-tags", status_code=201)
+def create_capability_tag(body: CapabilityTagInput, auth: AuthContext = Depends(require_recruitment_access)):
+    name = " ".join(normalize("NFKC", body.name).split())
+    if not name or len(name) > 40 or not name.isprintable():
+        raise HTTPException(422, "请输入 1 至 40 个字符的标签名称")
+    with owner_engine.begin() as connection:
+        if not fresh_departments(connection, auth) and auth.role != "super_admin":
+            raise HTTPException(403, "需要招聘管理权限")
+        _require_capability_filter_access(connection)
+        code = connection.execute(text("""
+            INSERT INTO capability_group(code,name,domain,display_order)
+            VALUES (:code,:name,'general',100)
+            ON CONFLICT(name) DO NOTHING RETURNING code
+        """), {"code": f"custom_{uuid4().hex}", "name": name}).scalar_one_or_none()
+        if code is None:
+            raise HTTPException(409, "该能力标签已存在")
+        audit(connection, auth.user_id, "capability_tag_created", code, target_type="capability_group")
+        return _recent_capability_tags(connection)
 
 
 @router.get("/applications")
@@ -233,7 +308,7 @@ def original(application_id: int, inline: bool = False, version: int | None = Qu
             application_lock(connection, application_id, auth)
         params = {"a": application_id, "u": auth.user_id}
         document = connection.execute(text("""
-            SELECT a.active_version_id,d.object_key,d.mime_type,
+            SELECT a.active_version_id,d.object_key,d.mime_type,d.source_kind,d.original_filename,
                    v.document_id=submitted.document_id AND EXISTS (
                      SELECT 1 FROM audit_log log WHERE log.actor_id=:u AND log.action='resume_import'
                        AND log.target_type='application' AND log.target_id=CAST(a.id AS text)
@@ -245,9 +320,12 @@ def original(application_id: int, inline: bool = False, version: int | None = Qu
         """), params).mappings().one_or_none()
         if document is None:
             raise HTTPException(404, "原件不可访问或授权已过期")
-        # Viewers can reopen the file they supplied while the application is still in scope.
-        # Opening another user's raw file and downloading still require a one-use grant.
-        uses_grant = not (inline and document["uploaded_by_viewer"])
+        # Reconstructed files contain the approved display copy and follow the application scope.
+        # Raw uploads retain the uploader preview or one-use grant rules.
+        reconstructed = document["source_kind"] == "reconstructed"
+        if reconstructed and not inline and auth.role != "dept_hr":
+            application_lock(connection, application_id, auth)
+        uses_grant = not (reconstructed or inline and document["uploaded_by_viewer"])
         if uses_grant and connection.execute(text("""
             SELECT 1 FROM resume_original_grant WHERE application_id=:a AND user_id=:u
               AND expires_at>now() FOR UPDATE
@@ -266,9 +344,10 @@ def original(application_id: int, inline: bool = False, version: int | None = Qu
         action = "view_original_pdf" if inline else "download_original"
         audit(connection, auth.user_id, action, application_id, {"version_id": document["active_version_id"]})
     if inline:
-        return FileResponse(path, media_type="application/pdf", filename=f"resume-{application_id}.pdf",
+        return FileResponse(path, media_type="application/pdf", filename=document["original_filename"] or f"resume-{application_id}.pdf",
                             content_disposition_type="inline", headers=SAFE_HEADERS)
-    return FileResponse(path, media_type="application/octet-stream", filename=f"resume-{application_id}." + path.rsplit(".", 1)[-1],
+    filename = document["original_filename"] or f"resume-{application_id}." + path.rsplit(".", 1)[-1]
+    return FileResponse(path, media_type="application/octet-stream", filename=filename,
                         headers=SAFE_HEADERS)
 
 
@@ -354,7 +433,7 @@ def transfer_options(application_id: int, auth: AuthContext = Depends(require_re
         items = s.execute(text("""
             SELECT j.id,j.title,j.department_id,d.name AS department_name
             FROM job j JOIN department d ON d.id=j.department_id
-            WHERE j.status='open' AND d.status='active' AND j.id<>:j
+            WHERE j.status='open' AND NOT j.hidden AND d.status='active' AND j.id<>:j
             ORDER BY (j.department_id=:d) DESC,d.name,j.title,j.id
         """), {"j": row["job_id"], "d": row["handling_department_id"]}).mappings().all()
     return {"items": [dict(item) for item in items]}
@@ -369,7 +448,7 @@ def transfer(application_id: int, body: Transfer, auth: AuthContext = Depends(re
             raise HTTPException(422, "请选择其他岗位")
         target = cn.execute(text("""
             SELECT j.department_id FROM job j JOIN department d ON d.id=j.department_id
-            WHERE j.id=:j AND j.status='open' AND d.status='active' FOR SHARE OF j,d
+            WHERE j.id=:j AND j.status='open' AND NOT j.hidden AND d.status='active' FOR SHARE OF j,d
         """), {"j": body.job_id}).scalar_one_or_none()
         if target is None:
             raise HTTPException(404, "目标岗位不存在或未开放")
@@ -440,13 +519,23 @@ def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Dep
         previous = None
         if job_id is not None:
             previous = cn.execute(text("""
-                SELECT department_id,recruitment_start,recruitment_end FROM job
+                SELECT department_id,recruitment_start,recruitment_end,recruiter_user_id FROM job
                 WHERE id=:id AND department_id=ANY(CAST(:deps AS bigint[])) FOR UPDATE
             """), params).mappings().one_or_none()
             if previous is None:
                 raise HTTPException(404, "岗位不存在")
             if previous["department_id"] != body.department_id:
                 raise HTTPException(422, "已创建的岗位不能更换部门，请新建岗位后调剂")
+        changed_recruiter = body.recruiter_user_id is not None and (
+            previous is None or previous["recruiter_user_id"] != body.recruiter_user_id
+        )
+        if changed_recruiter and not cn.execute(text("""
+            SELECT 1 FROM department_admin da JOIN app_user u ON u.id=da.user_id
+            WHERE u.id=:recruiter_user_id AND u.status='active'
+              AND (:admin OR da.department_id=:department_id)
+            FOR SHARE OF da,u
+        """), {**params, "admin": auth.role == "super_admin"}).first():
+            raise HTTPException(422, "请选择权限范围内的有效招聘人")
         start, end = (params[key] if not previous or key in body.model_fields_set else previous[key]
                       for key in ("recruitment_start","recruitment_end"))
         if start and end and start > end:
@@ -454,13 +543,13 @@ def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Dep
         if job_id is None:
             job_id = cn.execute(text("""
                 INSERT INTO job(department_id,title,jd,status,planned_headcount,target_date,recruitment_type,recruiter_name,
-                                requirements,required_skills,experience_tags,recruitment_start,recruitment_end)
+                                requirements,required_skills,experience_tags,recruitment_start,recruitment_end,recruiter_user_id)
                 VALUES(:department_id,:title,:jd,:status,:planned_headcount,:target_date,:recruitment_type,:recruiter_name,
-                       :requirements,:required_skills,:experience_tags,:recruitment_start,:recruitment_end) RETURNING id
+                       :requirements,:required_skills,:experience_tags,:recruitment_start,:recruitment_end,:recruiter_user_id) RETURNING id
             """), params).scalar_one()
             save_rounds(cn, job_id, body.rounds if body.rounds is not None else [RoundInput(name=name) for name in DEFAULT_ROUNDS])
         else:
-            editable = ("planned_headcount","target_date","recruitment_type","recruiter_name","requirements",
+            editable = ("planned_headcount","target_date","recruitment_type","recruiter_name","recruiter_user_id","requirements",
                         "required_skills","experience_tags","recruitment_start","recruitment_end")
             fields = [key for key in editable if key in body.model_fields_set]
             assignments = "".join(f",{key}=:{key}" for key in fields)

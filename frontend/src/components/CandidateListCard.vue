@@ -16,11 +16,11 @@ const parseStatus = computed(() => ['failed','parsed','parsing'].includes(props.
 <template>
   <button type="button" class="workbench-card" :class="`workbench-card--${appearance}`"
     :aria-current="active || undefined" :style="{'--status-color': statusColor}" @click="emit('select')">
-    <span v-if="score!=null" class="workbench-card-track" role="progressbar" :aria-label="name+' 岗位技能匹配度'"
+    <span v-if="score!=null" class="workbench-card-track" role="progressbar" :aria-label="name+' 岗位匹配度'"
       :aria-valuenow="score" aria-valuemin="0" aria-valuemax="100"><i :style="{width:score+'%'}"></i></span>
     <span class="workbench-card-initial" aria-hidden="true">{{ initial }}</span>
     <span class="workbench-card-name"><strong :title="name">{{ name }}</strong><span :title="position">{{ position }}</span></span>
-    <strong v-if="score!=null" class="workbench-card-score" title="岗位技能匹配度">{{ score }}<small>%</small></strong>
+    <strong v-if="score!=null" class="workbench-card-score" title="岗位匹配度">{{ score.toFixed(2) }}<small>%</small></strong>
     <span class="workbench-card-footer">
       <span class="workbench-card-tags">
         <span v-if="parseStatus">{{ parseStatus }}</span>

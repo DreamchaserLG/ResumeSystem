@@ -337,9 +337,6 @@ PROFILE_QUERY = text("""
                count(DISTINCT educated.candidate_id) AS people
         FROM educated JOIN school ON school.id=educated.school_id
         GROUP BY 1,2 ORDER BY 3 DESC,1 LIMIT 12
-    ), major_rows AS (
-        SELECT coalesce(major,'专业未核实') AS name,count(DISTINCT candidate_id) AS people
-        FROM educated GROUP BY 1 ORDER BY 2 DESC,1 LIMIT 10
     )
     SELECT jsonb_build_object(
         'covered',(SELECT count(*) FROM selected),
@@ -348,8 +345,7 @@ PROFILE_QUERY = text("""
         'degree',(SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.people DESC,d.code),'[]') FROM degree_rows d),
         'tier',(SELECT to_jsonb(t) FROM tier_rows t),
         'regions',(SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.people DESC,r.code),'[]') FROM region_rows r),
-        'schools',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.people DESC,s.name),'[]') FROM school_rows s),
-        'majors',(SELECT coalesce(jsonb_agg(to_jsonb(m) ORDER BY m.people DESC,m.name),'[]') FROM major_rows m)
+        'schools',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.people DESC,s.name),'[]') FROM school_rows s)
     )
 """)
 

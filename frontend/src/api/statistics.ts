@@ -38,6 +38,18 @@ export type BoardJobStatus = 'open'|'paused'|'closed'
 export type BoardStatus = 'unassigned'|'uncontacted'|'interviewing'|'pending_onboard'|'hired'|'rejected'|'blacklist'|'custom'
 export interface BoardActivity { applications:number; interviews:number; offers:number }
 export interface BoardTrend extends BoardActivity {start:string;end:string}
+export interface BoardProfileCount { code: string; people: number }
+export interface BoardSchool { name: string; region: string | null; people: number }
+// 本期候选人画像。性别依赖 resume_card_private，写入路径补齐前 gender_available 恒为 0。
+export interface BoardProfiles {
+  covered: number
+  gender_available: number
+  gender: Partial<Record<'male' | 'female' | 'other', number>>
+  degree: BoardProfileCount[]
+  tier: { is_985: number; is_211: number; is_double_first_class: number; unknown: number }
+  regions: BoardProfileCount[]
+  schools: BoardSchool[]
+}
 export interface RecruitmentDashboard {
   revision:string
   period:{kind:BoardPeriod;start:string;end:string;unit:'day'|'week'|'month';timezone:string}
@@ -53,6 +65,7 @@ export interface RecruitmentDashboard {
   jobs:(BoardActivity & JobOption & {
     department:string;status:string;planned_headcount:number|null;onboarded:number;gap:number|null
   })[]
+  profiles?:BoardProfiles
 }
 export const fetchRecruitmentDashboard = (params:URLSearchParams, signal?:AbortSignal) => api.get<RecruitmentDashboard>('/statistics/board?' + params, signal)
 

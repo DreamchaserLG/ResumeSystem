@@ -83,6 +83,60 @@ const stageRows = computed(()=>{
   return rows
 })
 const maxStage = computed(()=>Math.max(1,...stageRows.value.map(item=>item.count)))
+const shares = (part:number,total:number) => total ? Math.round(part*100/total)+'%' : '0%'
+
+// —— 候选人画像：性别 / 学历 / 院校层级 / 地区 ——
+const profiles = computed(()=>report.value?.profiles)
+const genderLabels:Record<string,string> = {male:'男',female:'女',other:'其他'}
+const genderColors:Record<string,string> = {male:'#3f7f8f',female:'#b4685f',other:'#8a7f9e'}
+const genderRows = computed(()=>{
+  const counts = profiles.value?.gender ?? {}
+  const total = Object.values(counts).reduce((sum,value)=>sum+(value ?? 0),0)
+  if (!total) return []
+  const order = ['male','female','other']
+  const codes = [...order.filter(code=>counts[code as keyof typeof counts]), ...Object.keys(counts).filter(code=>!order.includes(code))]
+  return codes.map(code=>({
+    code,label:genderLabels[code] ?? code,color:genderColors[code] ?? '#718090',
+    count:counts[code as keyof typeof counts] ?? 0,width:shares(counts[code as keyof typeof counts] ?? 0,total),
+  }))
+})
+const degreeLabels:Record<string,string> = {
+  phd:'博士',master:'硕士',bachelor:'本科',associate:'大专',high_school:'高中及以下',other:'其他',unknown:'未识别',
+}
+const degreeRows = computed(()=>{
+  const rows = profiles.value?.degree ?? []
+  const max = Math.max(1,...rows.map(item=>item.people))
+  return rows.map(item=>({...item,label:degreeLabels[item.code] ?? item.code,width:shares(item.people,max)}))
+})
+const tierRows = computed(()=>{
+  const tier = profiles.value?.tier
+  if (!tier) return []
+  const rows = [
+    {code:'is_985',label:'985 院校',count:tier.is_985,color:'#9c5a4a'},
+    {code:'is_211',label:'211 院校',count:tier.is_211,color:'#3f7f8f'},
+    {code:'is_double_first_class',label:'双一流',count:tier.is_double_first_class,color:'#6b7f4a'},
+    {code:'unknown',label:'院校未识别',count:tier.unknown,color:'#9a9a90'},
+  ].filter(item=>item.count>0)
+  const max = Math.max(1,...rows.map(item=>item.count))
+  return rows.map(item=>({...item,width:shares(item.count,max)}))
+})
+const regionNames:Record<string,string> = {
+  '110000':'北京','120000':'天津','130000':'河北','140000':'山西','150000':'内蒙古',
+  '210000':'辽宁','220000':'吉林','230000':'黑龙江','310000':'上海','320000':'江苏',
+  '330000':'浙江','340000':'安徽','350000':'福建','360000':'江西','370000':'山东',
+  '410000':'河南','420000':'湖北','430000':'湖南','440000':'广东','450000':'广西',
+  '460000':'海南','500000':'重庆','510000':'四川','520000':'贵州','530000':'云南',
+  '540000':'西藏','610000':'陕西','620000':'甘肃','630000':'青海','640000':'宁夏',
+  '650000':'新疆','710000':'台湾','810000':'中国香港','820000':'中国澳门',
+  overseas:'海外院校',unknown:'地区未识别',
+}
+const regionLabel = (code:string | null) => code ? (regionNames[code] ?? code) : '地区未识别'
+const regionRows = computed(()=>{
+  const rows = profiles.value?.regions ?? []
+  const max = Math.max(1,...rows.map(item=>item.people))
+  return rows.map(item=>({...item,label:regionLabel(item.code),width:shares(item.people,max)}))
+})
+const topSchools = computed(()=>profiles.value?.schools ?? [])
 const chartMax = computed(()=>{
   const peak = Math.max(1,...(report.value?.trend ?? []).flatMap(bucket=>series.map(item=>bucket[item.key])))
   return Math.ceil(peak/4)*4
@@ -96,7 +150,6 @@ const activeBucket = computed(()=>{
 })
 const periodText = (start:string,end:string) => start===end ? start : start+' 至 '+end
 const bucketLabel = (date:string) => report.value?.period.unit==='month' ? Number(date.slice(5,7))+'月' : date.slice(5).replace('-','/')
-const shares = (part:number,total:number) => total ? Math.round(part*100/total)+'%' : '0%'
 const rateText = (part:number|null,total:number|null) => part==null || !total ? '—' : (part*100/total).toLocaleString('zh-CN',{maximumFractionDigits:1})+'%'
 const completion = computed(()=>{
   const planned = report.value?.totals.planned ?? null
@@ -479,6 +532,84 @@ function exportReport() {
         </div>
       </section>
 
+      <section class="selection-section dashboard-enter" style="--enter-delay:420ms"
+        aria-labelledby="dashboard-profile" :aria-busy="busy">
+        <header class="panel-heading selection-heading">
+          <h2 id="dashboard-profile">候选人画像</h2>
+          <span>{{ periodText(report.period.start,report.period.end) }} · {{ scopeLabel }} · 已覆盖 {{ number(profiles?.covered ?? 0) }} 人</span>
+        </header>
+        <div class="analytics-grid profile-grid">
+          <section class="dashboard-panel" aria-labelledby="profile-gender">
+            <header class="panel-heading"><h3 id="profile-gender">性别</h3></header>
+            <template v-if="genderRows.length">
+              <p class="panel-note">按本期候选人去重 · 取简历性别字段</p>
+              <ul class="stage-list selection-stages">
+                <li v-for="item in genderRows" :key="item.code">
+                  <span>{{ item.label }}</span>
+                  <div class="stage-track" aria-hidden="true"><i :style="{width:item.width,background:item.color}"></i></div>
+                  <strong>{{ number(item.count) }}</strong>
+                </li>
+              </ul>
+            </template>
+            <p v-else class="hire-empty">
+              暂无可统计的性别数据（{{ number(profiles?.covered ?? 0) }} 人中已解析 {{ number(profiles?.gender_available ?? 0) }} 人）。
+              简历解析尚未写入性别字段，补齐后此处自动显示。
+            </p>
+          </section>
+          <section class="dashboard-panel" aria-labelledby="profile-degree">
+            <header class="panel-heading"><h3 id="profile-degree">学历</h3></header>
+            <p class="panel-note">取每人最高学历</p>
+            <ul v-if="degreeRows.length" class="stage-list selection-stages">
+              <li v-for="item in degreeRows" :key="item.code">
+                <span>{{ item.label }}</span>
+                <div class="stage-track" aria-hidden="true"><i :style="{width:item.width,background:'#3f7f8f'}"></i></div>
+                <strong>{{ number(item.count) }}</strong>
+              </li>
+            </ul>
+            <p v-else class="hire-empty">当前筛选暂无学历数据。</p>
+          </section>
+          <section class="dashboard-panel" aria-labelledby="profile-tier">
+            <header class="panel-heading"><h3 id="profile-tier">院校层级</h3></header>
+            <p class="panel-note">按毕业院校标签统计 · 同人可同时符合多项</p>
+            <ul v-if="tierRows.length" class="stage-list selection-stages">
+              <li v-for="item in tierRows" :key="item.code">
+                <span>{{ item.label }}</span>
+                <div class="stage-track" aria-hidden="true"><i :style="{width:item.width,background:item.color}"></i></div>
+                <strong>{{ number(item.count) }}</strong>
+              </li>
+            </ul>
+            <p v-else class="hire-empty">当前筛选暂无院校数据。</p>
+          </section>
+          <section class="dashboard-panel" aria-labelledby="profile-region">
+            <header class="panel-heading"><h3 id="profile-region">院校地区</h3></header>
+            <p class="panel-note">按毕业院校所在省份归类</p>
+            <ul v-if="regionRows.length" class="stage-list selection-stages">
+              <li v-for="item in regionRows" :key="item.code">
+                <span>{{ item.label }}</span>
+                <div class="stage-track" aria-hidden="true"><i :style="{width:item.width,background:'#7a6f4f'}"></i></div>
+                <strong>{{ number(item.count) }}</strong>
+              </li>
+            </ul>
+            <p v-else class="hire-empty">当前筛选暂无地区数据。</p>
+          </section>
+        </div>
+        <section v-if="topSchools.length" class="dashboard-panel profile-schools" aria-labelledby="profile-schools">
+          <header class="panel-heading"><h3 id="profile-schools">院校分布 · 前 {{ topSchools.length }} 所</h3></header>
+          <div class="dashboard-table-wrap" tabindex="0" aria-label="本期候选人院校分布">
+            <table class="dashboard-table departments-table">
+              <thead><tr><th scope="col">院校</th><th scope="col">地区</th><th scope="col">候选人数</th></tr></thead>
+              <tbody>
+                <tr v-for="item in topSchools" :key="item.name">
+                  <th scope="row">{{ item.name }}</th>
+                  <td>{{ regionLabel(item.region) }}</td>
+                  <td>{{ number(item.people) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
       <section class="dashboard-panel dashboard-enter" style="--enter-delay:425ms" aria-labelledby="dashboard-jobs">
         <header class="panel-heading">
           <h2 id="dashboard-jobs">岗位进度</h2>
@@ -609,6 +740,9 @@ function exportReport() {
 .funnel-stage-rates {display:flex;flex-wrap:wrap;gap:2px 10px;color:#4b6269;font-size:11px;font-variant-numeric:tabular-nums}
 .funnel-stage-rates b {color:#293f45;font-weight:650}
 .analytics-grid.secondary {grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+/* 候选人画像：四类维度并排，窄屏退化为两列 */
+.analytics-grid.profile-grid {grid-template-columns:repeat(4,minmax(0,1fr));align-items:start;margin-bottom:14px}
+.profile-schools {width:100%}
 .selection-heading {margin-bottom:9px;padding-inline:2px}
 .selection-section h3 {font-size:14px;color:#214750}
 .selection-stages li {grid-template-columns:106px minmax(0,1fr) minmax(26px,auto)}

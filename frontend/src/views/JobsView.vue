@@ -154,6 +154,7 @@ const form = reactive({
   recruitment_type:'social', recruiter_user_id:null as number|null, planned_headcount:null as number|null,
   target_date:'', requirements:'', required_skills:[] as string[], experience_tags:[] as string[],
   recruitment_start:'', recruitment_end:'', rounds:[] as {id?:number;name:string}[],
+  source_category:'',
 })
 function recruiterOptions(departmentId:number|undefined):Recruiter[] {
   const department=directory.value.departments.find(item=>item.id===departmentId)
@@ -201,6 +202,7 @@ function openJob(mode:typeof drawerMode.value,job:Job) {
     required_skills:[...job.required_skills],experience_tags:[...job.experience_tags],
     recruitment_start:job.recruitment_start || '',recruitment_end:job.recruitment_end || '',
     planned_headcount:job.planned_headcount ?? null,rounds:job.rounds.map(r=>({id:r.id,name:r.name})),
+    source_category:job.source_category || job.category || '',
   })
   drawer.value=true
 }
@@ -221,10 +223,21 @@ async function saveJob() {
   } catch(error){editorError.value=(error as Error).message}
   finally{saving.value=false}
 }
+const createForm = reactive({
+  jd:'', requirements:'', required_skills:[] as string[], experience_tags:[] as string[],
+  recruitment_type:'social', planned_headcount:null as number|null, target_date:'',
+})
+const incomplete = computed(()=>[
+  !newName.value.trim() && '岗位名称', !newDepartment.value && '所属部门',
+  !createForm.jd.trim() && '岗位职责', !createForm.requirements.trim() && '任职要求',
+  !createForm.required_skills.length && '必备技能', !createForm.experience_tags.length && '经验要求',
+].filter(Boolean))
 function openCreate(kind:'folder'|'job') {
   newName.value=''
   newDepartment.value=current.value?.departmentId
   createError.value=''
+  Object.assign(createForm,{jd:'',requirements:'',required_skills:[],experience_tags:[],
+    recruitment_type:'social',planned_headcount:null,target_date:''})
   creating.value=kind
 }
 async function saveFolder() {
@@ -238,11 +251,29 @@ async function saveFolder() {
   try {
     const created=await createCatalogFolder(current.value?.folder?.path ?? '',newName.value.trim(),
       isJob ? newDepartment.value ?? null : null)
+    const job=directory.value.items.find(row=>row.id===created.job_id)
+    // 目录建好后立刻写回 JD 等岗位资料；失败不影响新建，但要让用户看到原因。
+    let detailSaved=true
+    if (isJob && created.job_id) {
+      try {
+        await api.put('/hr/jobs/'+created.job_id,{
+          title:newName.value.trim(),department_id:newDepartment.value,
+          jd:createForm.jd,requirements:createForm.requirements,
+          required_skills:createForm.required_skills,experience_tags:createForm.experience_tags,
+          recruitment_type:createForm.recruitment_type,status:'paused',
+          planned_headcount:createForm.planned_headcount || null,target_date:createForm.target_date || null,
+        })
+      } catch (error) {
+        detailSaved=false
+        createError.value='岗位已创建，但 JD 资料未保存：'+(error as Error).message
+      }
+    }
+    if (!detailSaved) return
     creating.value=undefined
     await load()
     ElMessage.success(isJob ? '岗位已创建' : '文件夹已创建')
-    const job=directory.value.items.find(row=>row.id===created.job_id)
-    if (job) openJob('edit',job)
+    const fresh=directory.value.items.find(row=>row.id===created.job_id) ?? job
+    if (fresh && isJob) openJob('edit',fresh)
   } catch (error) { createError.value=(error as Error).message }
   finally { creatingBusy.value=false }
 }
@@ -471,6 +502,12 @@ function dateText(value:string) {
         <label>计划完成日期<input v-model="form.target_date" type="date"></label>
         <label>招聘开始日期<input v-model="form.recruitment_start" type="date" :max="form.recruitment_end || undefined"></label>
         <label>招聘截止日期<input v-model="form.recruitment_end" type="date" :min="form.recruitment_start || undefined"></label>
+        <label class="wide">岗位分类
+          <ElSelect v-model="form.source_category" filterable allow-create default-first-option clearable
+            :reserve-keyword="false" maxlength="60" aria-label="岗位分类" placeholder="选择已有分类，或输入新分类后回车">
+            <ElOption v-for="value in categories" :key="value" :label="value" :value="value"/>
+          </ElSelect>
+        </label>
         <label class="wide">岗位职责<ElInput v-model="form.jd" type="textarea" :rows="4" maxlength="4000" placeholder="填写日常职责、工作范围及目标"/></label>
         <label class="wide">任职要求<ElInput v-model="form.requirements" type="textarea" :rows="4" maxlength="4000" placeholder="填写专业背景、资格、能力及其他任职条件"/></label>
         <label class="wide">必备技能
@@ -504,19 +541,58 @@ function dateText(value:string) {
       </template>
     </ElDrawer>
 
-    <ElDialog :model-value="Boolean(creating)" width="min(480px, 95vw)"
+    <ElDialog :model-value="Boolean(creating)" width="min(640px, 95vw)"
       :title="creating==='job'?'新建岗位':'新建文件夹'" append-to-body
       @update:model-value="value=>{ if (!value) creating=undefined }">
+      <p v-if="creating==='job'" class="hire-muted create-hint">
+        岗位将建在当前目录下，填写完整 JD 后创建；保存失败可直接在编辑面板补齐。
+      </p>
       <form id="ftp-folder-editor" class="folder-editor" @submit.prevent="saveFolder">
         <label>{{ creating==='job'?'岗位名称':'文件夹名称' }}
           <ElInput v-model="newName" :maxlength="creating==='job'?120:255" autofocus/>
         </label>
-        <label v-if="creating==='job'">所属部门
-          <ElSelect v-model="newDepartment" :disabled="Boolean(current?.departmentId)" placeholder="选择已有部门">
-            <ElOption v-for="department in directory.departments" :key="department.id"
-              :value="department.id" :label="department.company_name+' / '+department.name"/>
-          </ElSelect>
-        </label>
+        <template v-if="creating==='job'">
+          <label>所属部门
+            <ElSelect v-model="newDepartment" :disabled="Boolean(current?.departmentId)" placeholder="选择已有部门">
+              <ElOption v-for="department in directory.departments" :key="department.id"
+                :value="department.id" :label="department.company_name+' / '+department.name"/>
+            </ElSelect>
+          </label>
+          <div class="create-pair">
+            <label>岗位属性
+              <ElSelect v-model="createForm.recruitment_type" aria-label="岗位属性">
+                <ElOption v-for="(title,code) in types" :key="code" :value="code" :label="title"/>
+              </ElSelect>
+            </label>
+            <label>计划招聘人数
+              <input v-model.number="createForm.planned_headcount" type="number" min="1" max="100000" placeholder="可留空">
+            </label>
+            <label>计划完成日期
+              <input v-model="createForm.target_date" type="date">
+            </label>
+          </div>
+          <label>岗位职责
+            <ElInput v-model="createForm.jd" type="textarea" :rows="4" maxlength="4000"
+              placeholder="填写日常职责、工作范围及目标"/>
+          </label>
+          <label>任职要求
+            <ElInput v-model="createForm.requirements" type="textarea" :rows="4" maxlength="4000"
+              placeholder="填写专业背景、资格、能力及其他任职条件"/>
+          </label>
+          <label>必备技能
+            <ElSelect v-model="createForm.required_skills" multiple filterable allow-create default-first-option
+              :reserve-keyword="false" :multiple-limit="20" aria-label="必备技能"
+              placeholder="输入技能名称后按回车添加"/>
+          </label>
+          <label>工作经验要求
+            <ElSelect v-model="createForm.experience_tags" multiple filterable allow-create default-first-option
+              :reserve-keyword="false" :multiple-limit="12" aria-label="工作经验要求"
+              placeholder="选择标签，或输入后按回车自定义">
+              <ElOption v-for="value in experienceOptions" :key="value" :label="value" :value="value"/>
+            </ElSelect>
+          </label>
+          <p v-if="incomplete.length" class="hire-muted create-hint">待补充：{{ incomplete.join('、') }}</p>
+        </template>
         <p v-if="createError" class="hire-error" role="alert">{{ createError }}</p>
       </form>
       <template #footer>
@@ -572,6 +648,11 @@ function dateText(value:string) {
 .folder-title svg {color:#a67322}
 .folder-editor,.folder-editor label {display:grid;gap:9px}
 .folder-editor {gap:16px}
+.create-hint {font-size:12px;line-height:1.6;margin:0 0 2px}
+.create-pair {display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.create-pair input {min-width:0;width:100%;padding:7px 9px;border:1px solid var(--rs-border-strong);border-radius:8px;color:inherit;background:white}
+.create-pair input:focus {outline:0;border-color:var(--hire-accent);box-shadow:0 0 0 3px rgba(13,137,126,.1)}
+@media (max-width:560px) {.create-pair {grid-template-columns:1fr}}
 @media (max-width:620px) {
   .jobs-page .hire-heading {align-items:flex-start;flex-wrap:wrap}
   .job-metrics button {padding:10px 5px}.job-metrics span{font-size:12px}

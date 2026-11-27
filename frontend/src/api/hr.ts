@@ -17,7 +17,7 @@ export interface JobPostingReference {
   category:string|null; jd_sources:JobPostingSource[]; reference_current:boolean; jd_researched_on:string|null
   recruitment_window_is_reference:boolean
 }
-export interface Job extends HiringRequirements, JobPostingReference { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; planned_headcount: number | null; target_date: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[]; company_id: number; company_name: string; recruitment_type: string; recruiter_name: string; recruiter_user_id: number | null; department_recruiter_name: string | null; updated_at: string }
+export interface Job extends HiringRequirements, JobPostingReference { id: number; title: string; status: string; department_id: number; department_name: string; jd: string | null; planned_headcount: number | null; target_date: string | null; application_count: number; manageable: boolean; rounds: InterviewRound[]; company_id: number; company_name: string; recruitment_type: string; recruiter_name: string; recruiter_user_id: number | null; department_recruiter_name: string | null; updated_at: string; source_category: string | null }
 export type TransferJob = Pick<Job, 'id' | 'title' | 'department_id' | 'department_name'>
 export const stagesFor = (rounds: InterviewRound[] = []): Stage[] => [
   { code: 'review', label: '待审核', round_id: null },

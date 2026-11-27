@@ -90,6 +90,7 @@ class JobInput(BaseModel):
     recruitment_type: Literal["social","campus","internship","internal"] = "social"
     recruiter_name: str = Field(default="",max_length=80)
     recruiter_user_id: int | None = Field(default=None, gt=0)
+    source_category: str = Field(default="", max_length=60)
 
 
 def _note(value):
@@ -546,9 +547,11 @@ def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Dep
         if job_id is None:
             job_id = cn.execute(text("""
                 INSERT INTO job(department_id,title,jd,status,planned_headcount,target_date,recruitment_type,recruiter_name,
-                                requirements,required_skills,experience_tags,recruitment_start,recruitment_end,recruiter_user_id)
+                                requirements,required_skills,experience_tags,recruitment_start,recruitment_end,recruiter_user_id,
+                                source_category)
                 VALUES(:department_id,:title,:jd,:status,:planned_headcount,:target_date,:recruitment_type,:recruiter_name,
-                       :requirements,:required_skills,:experience_tags,:recruitment_start,:recruitment_end,:recruiter_user_id) RETURNING id
+                       :requirements,:required_skills,:experience_tags,:recruitment_start,:recruitment_end,:recruiter_user_id,
+                       nullif(:source_category,'')) RETURNING id
             """), params).scalar_one()
             save_rounds(cn, job_id, body.rounds if body.rounds is not None else [RoundInput(name=name) for name in DEFAULT_ROUNDS])
         else:
@@ -556,6 +559,8 @@ def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Dep
                         "required_skills","experience_tags","recruitment_start","recruitment_end")
             fields = [key for key in editable if key in body.model_fields_set]
             assignments = "".join(f",{key}=:{key}" for key in fields)
+            if "source_category" in body.model_fields_set:
+                assignments += ",source_category=nullif(:source_category,'')"
             cn.execute(text(f"UPDATE job SET title=:title,jd=:jd,status=:status,updated_at=now(){assignments} WHERE id=:id"), params)
             if body.rounds is not None:
                 save_rounds(cn, job_id, body.rounds)

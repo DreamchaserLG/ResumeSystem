@@ -9,7 +9,11 @@ from sqlalchemy import text
 
 from app.core.auth import AuthContext, require_auth, require_recruitment_access
 from app.core.db import rls_session
-from app.core.recruitment_board import recruitment_board, recruitment_board_updates
+from app.core.recruitment_board import (
+    recruitment_board,
+    recruitment_board_profiles,
+    recruitment_board_updates,
+)
 from app.core.talent_status import Status
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
@@ -28,7 +32,11 @@ def board(
     if auth.role != "super_admin":
         raise HTTPException(403, "招聘看板仅限超级管理员查看")
     with rls_session(departments=auth.departments, user_id=auth.user_id, repeatable_read=True) as session:
-        return recruitment_board(session, period, anchor, department_id, job_id, status, job_status)
+        payload = recruitment_board(session, period, anchor, department_id, job_id, status, job_status)
+        payload["profiles"] = recruitment_board_profiles(
+            session, period, anchor, department_id, job_id, status, job_status
+        )
+        return payload
 
 
 @router.get("/board/updates")

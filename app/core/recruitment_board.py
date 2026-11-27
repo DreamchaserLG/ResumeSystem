@@ -280,3 +280,89 @@ BOARD_QUERY = text("""
            (SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.applications DESC,d.name,d.id),'[]') FROM department_rows d) AS departments,
            (SELECT coalesce(jsonb_agg(to_jsonb(j) ORDER BY j.gap DESC NULLS LAST,j.applications DESC,j.title,j.id),'[]') FROM job_rows j) AS jobs
 """)
+
+
+PROFILE_QUERY = text("""
+    WITH people AS MATERIALIZED (
+        SELECT a.candidate_id,a.active_version_id,a.job_id,coalesce(t.status,'unassigned') AS status
+        FROM application a
+        LEFT JOIN job assignment ON assignment.id=a.job_id
+        LEFT JOIN talent t USING (candidate_id)
+        WHERE a.deleted_at IS NULL AND assignment.hidden IS NOT TRUE
+          AND a.submitted_at >= (CAST(:start AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')
+          AND a.submitted_at < (CAST(:until AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')
+          AND (CAST(:department AS bigint) IS NULL OR coalesce(assignment.department_id,a.handling_department_id)=:department)
+          AND (CAST(:job AS bigint) IS NULL OR a.job_id=:job)
+    ), selected AS MATERIALIZED (
+        SELECT DISTINCT ON (candidate_id) * FROM people
+        WHERE (CAST(:status AS text) IS NULL OR status=:status)
+          AND (CAST(:job_status AS text) IS NULL OR EXISTS (
+              SELECT 1 FROM job current_job WHERE current_job.id=job_id AND current_job.status=:job_status))
+        ORDER BY candidate_id,active_version_id DESC
+    ), educated AS MATERIALIZED (
+        SELECT s.candidate_id,s.active_version_id,s.job_id,s.status,
+               e.school_id,e.degree_level,e.major,school.atlas_region,school.atlas_city,
+               CASE WHEN EXISTS (SELECT 1 FROM school_tag t WHERE t.school_id=e.school_id AND t.tag_code='is_985') THEN true ELSE false END AS is_985,
+               CASE WHEN EXISTS (SELECT 1 FROM school_tag t WHERE t.school_id=e.school_id AND t.tag_code='is_211') THEN true ELSE false END AS is_211,
+               CASE WHEN EXISTS (SELECT 1 FROM school_tag t WHERE t.school_id=e.school_id AND t.tag_code='is_double_first_class') THEN true ELSE false END AS is_dfcl
+        FROM selected s
+        LEFT JOIN LATERAL (
+            SELECT r.school_id,r.degree_level,nullif(left(r.major,100),'') AS major
+            FROM resume_education r WHERE r.version_id=s.active_version_id
+            ORDER BY array_position(ARRAY['phd','master','bachelor','associate','high_school','other'],r.degree_level) NULLS LAST,
+                     coalesce(r.end_date,r.start_date) DESC NULLS LAST,r.record_no
+            LIMIT 1
+        ) e ON true
+        LEFT JOIN school ON school.id=e.school_id
+    ), gender_source AS MATERIALIZED (
+        SELECT s.candidate_id,p.gender
+        FROM selected s JOIN resume_card_private p ON p.version_id=s.active_version_id
+        WHERE p.gender IS NOT NULL
+    ), gender_rows AS (
+        SELECT gender,count(*) AS people FROM gender_source GROUP BY gender
+    ), degree_rows AS (
+        SELECT coalesce(degree_level,'unknown') AS code,count(DISTINCT candidate_id) AS people
+        FROM educated GROUP BY 1
+    ), tier_rows AS (
+        SELECT count(DISTINCT candidate_id) FILTER (WHERE is_985) AS is_985,
+               count(DISTINCT candidate_id) FILTER (WHERE is_211) AS is_211,
+               count(DISTINCT candidate_id) FILTER (WHERE is_dfcl) AS is_double_first_class,
+               count(DISTINCT candidate_id) FILTER (WHERE school_id IS NULL) AS unknown
+        FROM educated
+    ), region_rows AS (
+        SELECT coalesce(atlas_region,'unknown') AS code,count(DISTINCT candidate_id) AS people
+        FROM educated GROUP BY 1
+    ), school_rows AS (
+        SELECT school.canonical_name AS name,school.atlas_region AS region,
+               count(DISTINCT educated.candidate_id) AS people
+        FROM educated JOIN school ON school.id=educated.school_id
+        GROUP BY 1,2 ORDER BY 3 DESC,1 LIMIT 12
+    ), major_rows AS (
+        SELECT coalesce(major,'专业未核实') AS name,count(DISTINCT candidate_id) AS people
+        FROM educated GROUP BY 1 ORDER BY 2 DESC,1 LIMIT 10
+    )
+    SELECT jsonb_build_object(
+        'covered',(SELECT count(*) FROM selected),
+        'gender_available',(SELECT count(*) FROM gender_source),
+        'gender',(SELECT coalesce(jsonb_object_agg(gender,people),'{}') FROM gender_rows),
+        'degree',(SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.people DESC,d.code),'[]') FROM degree_rows d),
+        'tier',(SELECT to_jsonb(t) FROM tier_rows t),
+        'regions',(SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.people DESC,r.code),'[]') FROM region_rows r),
+        'schools',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.people DESC,s.name),'[]') FROM school_rows s),
+        'majors',(SELECT coalesce(jsonb_agg(to_jsonb(m) ORDER BY m.people DESC,m.name),'[]') FROM major_rows m)
+    )
+""")
+
+
+def recruitment_board_profiles(session, kind, anchor, department_id, job_id, status=None, job_status=None):
+    """本期候选人的画像分布：性别、学历、院校层级、地区。
+
+    与 recruitment_board 共用同一周期口径和筛选条件，在同一只读事务内执行。
+    性别依赖 resume_card_private，该表当前没有写入路径，缺失时 gender_available 为 0。
+    """
+    today = datetime.now(SHANGHAI).date()
+    start, until, _ = board_period(kind, anchor, today)
+    return session.execute(PROFILE_QUERY, {
+        "department": department_id, "job": job_id, "start": start, "until": until,
+        "status": status, "job_status": job_status,
+    }).scalar_one()

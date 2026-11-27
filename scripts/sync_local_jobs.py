@@ -90,17 +90,36 @@ def main(path, dry_run=False):
             cn.execute(text("DELETE FROM job WHERE id=:id"), {"id": row.id})
             removed.append((row.id, row.title))
 
+        # 目录表约束：挂岗位的目录必须有 department_id 且路径含斜杠。
+        job_department = {}
+        for job in jobs:
+            job_id = by_title.get(normalize(job["title"]))
+            if job_id:
+                job_department[job_id] = departments[job["department"]]
+
         folders = cn.execute(text(
             "UPDATE ftp_catalog_folder SET job_id=NULL WHERE job_id IS NOT NULL RETURNING path"
         )).rowcount
-        linked = 0
+        linked, skipped = 0, []
         for row in cn.execute(text("SELECT path FROM ftp_catalog_folder WHERE job_id IS NULL")).all():
             title = row.path.split("/")[-1]
             job_id = by_title.get(normalize(title))
-            if job_id:
-                cn.execute(text("UPDATE ftp_catalog_folder SET job_id=:job WHERE path=:path"),
-                           {"job": job_id, "path": row.path})
-                linked += 1
+            if not job_id:
+                continue
+            if "/" not in row.path:
+                skipped.append((row.path, "根级目录不能挂岗位"))
+                continue
+            owner = cn.execute(text(
+                "SELECT coalesce(department_id,(SELECT department_id FROM job WHERE id=:job)) AS dep"
+            ), {"job": job_id}).scalar_one()
+            department = owner or job_department.get(job_id)
+            if department is None:
+                skipped.append((row.path, "岗位无部门"))
+                continue
+            cn.execute(text(
+                "UPDATE ftp_catalog_folder SET job_id=:job,department_id=:dep WHERE path=:path"
+            ), {"job": job_id, "dep": department, "path": row.path})
+            linked += 1
 
         if dry_run:
             cn.rollback()
@@ -113,6 +132,8 @@ def main(path, dry_run=False):
         print("  -", item[1])
     for job_id, title, resumes in kept:
         print(f"  ! 保留（有 {resumes} 份简历关联）：{title}")
+    for path, reason in skipped:
+        print(f"  ? 跳过目录 {path}：{reason}")
     if folders:
         print(f"  已解除 {folders} 个目录的原岗位绑定后重新匹配")
 

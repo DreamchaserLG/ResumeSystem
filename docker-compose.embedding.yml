@@ -1,0 +1,58 @@
+# CPU 版 bge-m3 向量化服务（CentOS 无可用 GPU，走 CPU 推理）
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.ftp.yml -f compose-lan.yml \
+#     -f docker-compose.embedding.yml up -d
+#
+# 说明：
+#   * 模型文件必须与本机 `models/bge-m3` 完全一致（sha256 校验在服务启动时执行，
+#     校验不过直接退出，避免用错权重污染 resume_chunk_embedding）。
+#   * socket 走 docker 命名卷而不是宿主目录绑定：CentOS 开了 SELinux Enforcing，
+#     `:z` 重标记的宿主目录里 root 也无法 unix socket bind（Permission denied）。
+#   * api 通过 EMBEDDING_SOCKET=/run/resume-embedding/model.sock 访问，
+#     连不上时 encode_queries 抛 EmbeddingUnavailable，调用方降级到关键词路径，
+#     不影响解析与列表页。
+
+x-embed-mounts: &embed-mounts
+  - "${EMBED_MODEL_DIR:-/opt/resume-lan/embed-models/bge-m3}:/models/bge-m3:ro"
+  - "${EMBED_CODE_DIR:-/opt/resume-lan/embed-models/code}:/code:ro"
+volumes:
+  embed_sock:
+
+services:
+  api:
+    volumes:
+      - "${STORAGE_DIR:-./storage}:/data/storage"
+      - "./models/translation/en_zh:/opt/reasoning-translation:ro"
+      - "embed_sock:/run/resume-embedding"
+
+  worker:
+    volumes:
+      - "embed_sock:/run/resume-embedding"
+
+  embedding:
+    image: ${EMBED_IMAGE:-resume-embed-cpu:latest}
+    restart: unless-stopped
+    network_mode: host
+    user: "0"
+    environment:
+      PYTHONPATH: /home/resume/.local/lib/python3.12/site-packages
+      EMBED_MODEL_DIR: /models/bge-m3
+      EMBED_SOCKET: /run/resume-embedding/model.sock
+      EMBED_THREADS: ${EMBED_THREADS:-12}
+      EMBED_BATCH: ${EMBED_BATCH:-16}
+      OMP_NUM_THREADS: ${EMBED_THREADS:-12}
+    volumes:
+      - "${EMBED_MODEL_DIR:-/opt/resume-lan/embed-models/bge-m3}:/models/bge-m3:ro"
+      - "${EMBED_CODE_DIR:-/opt/resume-lan/embed-models/code}:/code:ro"
+      - "embed_sock:/run/resume-embedding"
+    command: ["python3", "/code/embed_server.py"]
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect('/run/resume-embedding/model.sock')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s

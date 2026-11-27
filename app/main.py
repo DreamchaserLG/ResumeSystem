@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import admin, auth, jobs, system, uploads
+from app.api import admin, auth, ftp_catalog, jobs, system, uploads
 from app.api import hr, integrations, job_imports, profile, recruiting_analysis, statistics, talent, workspace
 from app.core.config import get_settings
 
@@ -45,6 +45,7 @@ async def access_log(request: Request, call_next):
 app.include_router(system.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(ftp_catalog.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(uploads.router, prefix="/api/v1")
 

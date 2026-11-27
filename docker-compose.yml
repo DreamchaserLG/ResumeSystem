@@ -82,10 +82,7 @@ services:
 
   frontend:
     build: {context: frontend}
-    ports: ["127.0.0.1:${FRONTEND_PORT:-5173}:80"]
-    # 开发期直接映射构建产物：`cd frontend && pnpm build` 后刷新即生效，不必重建镜像。
-    # 生产部署若要走镜像内产物，删掉这一行即可。
-    volumes: ["./frontend/dist:/usr/share/nginx/html:ro"]
+    ports: ["${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-5173}:80"]
     depends_on:
       api: {condition: service_healthy}
 

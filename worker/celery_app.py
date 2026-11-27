@@ -1,6 +1,8 @@
 """Celery 应用（异步任务队列，M3 起承载解析/OCR/抽取流水线）。"""
 import os
 
+from datetime import timedelta
+
 from celery import Celery
 from celery.schedules import crontab
 from app.core.config import get_settings
@@ -23,13 +25,20 @@ celery_app.conf.update(
 )
 
 settings = get_settings()
+celery_app.conf.beat_schedule = {}
 if settings.resume_drop_dir:
-    celery_app.conf.beat_schedule = {
+    celery_app.conf.beat_schedule.update({
         "resume-library-daily": {
             "task": "worker.scan_resume_dropdir",
             "schedule": crontab(hour=settings.resume_drop_hour, minute=0),
         }
+    })
+if settings.resume_ftp_host:
+    celery_app.conf.beat_schedule["ftp-job-catalog"] = {
+        "task": "worker.sync_ftp_job_catalog",
+        "schedule": timedelta(minutes=settings.resume_ftp_sync_minutes),
+        "options": {"queue": "ftp_catalog", "expires": settings.resume_ftp_sync_minutes * 60},
     }
 
 # 导入任务模块，保证任务注册
-from worker.tasks import attachment, job_import, parse, ping, scan_dropdir  # noqa: E402,F401
+from worker.tasks import attachment, ftp_catalog, job_import, parse, ping, scan_dropdir  # noqa: E402,F401

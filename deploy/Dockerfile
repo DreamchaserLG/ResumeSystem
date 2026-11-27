@@ -10,8 +10,7 @@ FROM base AS api
 COPY app/ app/
 COPY worker/ worker/
 COPY migrations/ migrations/
-COPY scripts/showcase_dataset.py scripts/
-COPY db/ db/
+COPY scripts/showcase_dataset.py scripts/init_lan_admin.py scripts/
 USER resume
 EXPOSE 8000
 CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]

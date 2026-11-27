@@ -1,7 +1,7 @@
 """应用配置（pydantic-settings，环境变量驱动）。"""
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     embedding_socket: str = "./storage/embedding/model.sock"
     resume_drop_dir: str = ""
     resume_drop_hour: int = 3
+    resume_ftp_host: str = ""
+    resume_ftp_port: int = Field(default=21, ge=1, le=65535)
+    resume_ftp_user: str = ""
+    resume_ftp_password: SecretStr | None = None
+    resume_ftp_root: str = "/"
+    resume_ftp_tls: bool = True
+    resume_ftp_ca_file: str = ""
+    resume_ftp_encoding: str = "utf-8"
+    resume_ftp_sync_minutes: int = Field(default=30, ge=1, le=1440)
     session_ttl_seconds: int = 8 * 3600
     password_pbkdf2_rounds: int = 60000
 

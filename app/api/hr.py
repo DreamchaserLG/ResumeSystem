@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from app.core import ftp_source
 from app.core.auth import AuthContext, require_auth, require_recruitment_access
 from app.core.cards import CardQuery, cards, education_summary
 from app.core.db import owner_engine, rls_session
@@ -500,6 +501,8 @@ def search_candidates(body: SearchInput, auth: AuthContext = Depends(require_rec
 @router.post("/jobs", status_code=201)
 @router.put("/jobs/{job_id}")
 def write_job(body: JobInput, job_id: int | None = None, auth: AuthContext = Depends(require_auth)):
+    if job_id is None and ftp_source.enabled():
+        raise HTTPException(409, "请在岗位管理的子目录中创建岗位")
     with owner_engine.begin() as cn:
         departments = fresh_departments(cn, auth)
         department_active = cn.execute(text("SELECT 1 FROM department WHERE id=:id AND status='active' FOR SHARE"),

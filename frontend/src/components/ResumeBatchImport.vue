@@ -4,12 +4,16 @@ import { CloudUploadOutline } from '@vicons/ionicons5'
 import { ElButton, ElDialog, ElSelect, ElOption, ElProgress, ElTag } from 'element-plus'
 import { api } from '@/api/client'
 import type { Job } from '@/api/hr'
+import { fetchCatalog, type CatalogFolder } from '@/api/ftpCatalog'
 import FilePickerZone from './FilePickerZone.vue'
-type State = 'ready'|'sending'|'parsing'|'published'|'failed'|'unsupported'
+type State = 'ready'|'sending'|'parsing'|'published'|'stored'|'failed'|'unsupported'
 type BatchItem = {key:string; file:File; path:string; state:State; message?:string; id?:number;version?:number}
 const props=defineProps<{modelValue:boolean; mode:'single'|'batch'; jobs:Job[]; preferredJob?:number}>()
 const emit=defineEmits<{ 'update:modelValue':[value:boolean]; updated:[job:number]; uploading:[value:boolean]; imported:[job:number,id:number] }>()
 const job=ref<number>()
+const ftpJobs=ref(new Map<number,CatalogFolder>())
+const ftpLoading=ref(false)
+const ftpReady=ref(false)
 const items=ref<BatchItem[]>([])
 const active=ref(false)
 const folder=ref<HTMLInputElement>()
@@ -18,11 +22,31 @@ const fileError=ref('')
 const priorApplication=ref('')
 const single=computed(()=>props.mode==='single')
 const supported=/\.(pdf|docx?|png|jpe?g|webp)$/i
-const labels:Record<State,string>={ready:'待导入',sending:'上传中',parsing:'等待解析',published:'已完成',failed:'失败',unsupported:'已跳过'}
-const final=computed(()=>items.value.filter(row=>['published','failed','unsupported'].includes(row.state)).length)
+const labels:Record<State,string>={ready:'待导入',sending:'上传中',parsing:'等待解析',published:'已完成',stored:'已上传 FTP',failed:'失败',unsupported:'已跳过'}
+const final=computed(()=>items.value.filter(row=>['published','stored','failed','unsupported'].includes(row.state)).length)
 const ready=computed(()=>items.value.filter(row=>row.state==='ready').length)
 const openJobs=computed(()=>props.jobs.filter(row=>row.status==='open' && row.manageable))
 const activeJob=computed(()=>openJobs.value.find(row=>row.id===job.value))
+const ftpTarget=computed(()=>job.value ? ftpJobs.value.get(job.value) : undefined)
+watch(()=>props.modelValue,async open=>{
+  if (!open) return
+  ftpLoading.value=true
+  ftpReady.value=false
+  try {
+    const catalog=await fetchCatalog()
+    ftpJobs.value=new Map(catalog.folders.flatMap(row=>row.job_id ? [[row.job_id,row]] : []))
+    ftpReady.value=true
+    fileError.value=''
+  } catch (error) { fileError.value=(error as Error).message }
+  finally { ftpLoading.value=false }
+},{immediate:true})
+function requestId() {
+  const bytes=crypto.getRandomValues(new Uint8Array(16))
+  bytes[6]=(bytes[6]&15)|64
+  bytes[8]=(bytes[8]&63)|128
+  const hex=Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('')
+  return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-')
+}
 let poller:ReturnType<typeof setTimeout>|undefined
 let disposed=false
 let nextScan=0
@@ -38,7 +62,7 @@ function pick(selection:File[]) {
   if(single.value && items.value.some(row=>row.id)) priorApplication.value=''
   items.value=selection.map(file=>{
     const valid=supported.test(file.name) && file.size>0 && file.size<=20*1024*1024
-    return {file,path:file.webkitRelativePath || file.name,key:crypto.randomUUID(),state:valid?'ready':'unsupported',
+    return {file,path:file.webkitRelativePath || file.name,key:requestId(),state:valid?'ready':'unsupported',
       message:valid?undefined:!supported.test(file.name)?'格式不支持':'文件为空或超过 20 MB'}
   })
 }
@@ -48,8 +72,9 @@ function pickInput(input:HTMLInputElement) {
 }
 async function submit() {
   const selected=job.value
-  if(disposed || !selected || active.value || !ready.value) return
-  const priorId=single.value ? priorApplication.value.trim() : ''
+  if(disposed || !selected || active.value || !ready.value || !ftpReady.value) return
+  const toFtp=Boolean(ftpTarget.value)
+  const priorId=single.value && !toFtp ? priorApplication.value.trim() : ''
   if(priorId && (!/^\d+$/.test(priorId) || !Number.isSafeInteger(Number(priorId)) || Number(priorId)<1)){
     fileError.value='请输入有效的关联申请编号。'
     return
@@ -66,6 +91,12 @@ async function submit() {
       const body = new FormData()
       body.append('file',row.file)
       try {
+        if (toFtp) {
+          await api.upload('/job-catalog/jobs/'+selected+'/uploads?request_id='+row.key,body)
+          row.state='stored'
+          row.message='等待同步和解析'
+          continue
+        }
         const target=new URLSearchParams({job_id:String(selected),import_request:row.key})
         if(priorId) target.set('candidate_application_id',priorId)
         const result=await api.upload<{application_id:number;version_id:number;status:string}>('/applications?'+target,body)
@@ -121,8 +152,10 @@ onBeforeUnmount(()=>{disposed=true;if(poller)clearTimeout(poller)})
     <div class="batch-controls">
       <label>导入岗位 <ElSelect v-model="job" placeholder="选择招聘中岗位" aria-label="导入岗位"
         :disabled="locked || items.some(row=>row.id && row.state!=='unsupported')">
-        <ElOption v-for="row in openJobs" :key="row.id" :value="row.id" :label="row.title"/>
+        <ElOption v-for="row in openJobs" :key="row.id" :value="row.id"
+          :label="ftpJobs.get(row.id)?.path.replaceAll('/',' / ') ?? row.title"/>
       </ElSelect></label>
+      <p v-if="ftpTarget" class="hire-muted">文件上传到 Windows FTP 的所选岗位目录，同步后进入简历列表。</p>
       <FilePickerZone v-if="single" :title="items.length?'更换文件':'选择或拖入一份简历'"
         hint="PDF、Word、图片，单份不超过 20 MB" :disabled="locked" @browse="files?.click()" @drop="pick"/>
       <FilePickerZone v-else folder title="选择文件夹" hint="同时读取文件夹及子文件夹中的简历"
@@ -132,7 +165,7 @@ onBeforeUnmount(()=>{disposed=true;if(poller)clearTimeout(poller)})
         @change="pickInput($event.target as HTMLInputElement)">
       <div v-if="!single" class="batch-help"><span>PDF、Word、图片，单份不超过 20 MB</span>
         <ElButton text type="primary" :disabled="locked" @click="files?.click()">也可选择多个文件</ElButton></div>
-      <details v-if="single" class="link-application">
+      <details v-if="single && !ftpTarget" class="link-application">
         <summary>关联已有申请（可选）</summary>
         <label>申请编号 <input v-model="priorApplication" type="text" inputmode="numeric" :disabled="locked || items.some(row=>!!row.id)"
           placeholder="同一候选人已有的申请编号"></label>
@@ -144,14 +177,14 @@ onBeforeUnmount(()=>{disposed=true;if(poller)clearTimeout(poller)})
         <ul class="batch-list">
           <li v-for="row in items" :key="row.key">
             <div><strong :title="row.path">{{ row.path }}</strong><small v-if="row.message">{{ row.message }}</small></div>
-            <ElTag size="small" :type="row.state==='failed'?'danger':row.state==='published'?'success':'info'">{{ labels[row.state] }}</ElTag>
+            <ElTag size="small" :type="row.state==='failed'?'danger':(row.state==='published'||row.state==='stored')?'success':'info'">{{ labels[row.state] }}</ElTag>
             <ElButton v-if="row.state==='failed' && !row.id" text type="primary" @click="retry(row)">重试</ElButton>
           </li>
         </ul>
       </template>
     </div>
     <template #footer><ElButton @click="emit('update:modelValue',false)">{{ locked?'在后台处理':'关闭' }}</ElButton>
-      <ElButton v-if="ready || active" type="primary" :icon="CloudUploadOutline" :loading="active" :disabled="!activeJob" @click="submit">导入{{ !single && ready?' '+ready+' 份':'' }}</ElButton></template>
+      <ElButton v-if="ready || active" type="primary" :icon="CloudUploadOutline" :loading="active" :disabled="!activeJob || ftpLoading || !ftpReady" @click="submit">导入{{ !single && ready?' '+ready+' 份':'' }}</ElButton></template>
   </ElDialog>
 </template>
 <style scoped>

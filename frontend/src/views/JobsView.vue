@@ -1,16 +1,28 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { BriefcaseOutline, FolderOpenOutline, SearchOutline, SettingsOutline, AddOutline, CloudUploadOutline, EllipsisHorizontal } from '@vicons/ionicons5'
-import { ElAlert, ElButton, ElDialog, ElDrawer, ElDropdown, ElDropdownMenu, ElDropdownItem, ElInput, ElSelect, ElOption, ElTable, ElTableColumn, ElTag, ElPagination, ElPopover, ElCheckbox, ElMessage } from 'element-plus'
+import { BriefcaseOutline, FolderOpenOutline, SearchOutline, SettingsOutline, AddOutline, SyncOutline, EllipsisHorizontal } from '@vicons/ionicons5'
+import { ElButton, ElDialog, ElDrawer, ElDropdown, ElDropdownMenu, ElDropdownItem, ElInput, ElSelect, ElOption, ElTable, ElTableColumn, ElTag, ElPagination, ElPopover, ElCheckbox, ElMessage } from 'element-plus'
 import { api } from '@/api/client'
 import { dateLabel, jobStatusLabel, jobStatusOptions, type Job } from '@/api/hr'
-import { jobDirectory, type JobDirectory, type JobImportStatus, type Recruiter } from '@/api/recruiting'
-import FilePickerZone from '@/components/FilePickerZone.vue'
+import { jobDirectory, type JobDirectory, type Recruiter } from '@/api/recruiting'
+import { createCatalogFolder, fetchCatalog, fetchSync, startCatalogSync, type CatalogFolder, type FtpCatalog } from '@/api/ftpCatalog'
 import JobPostingDetails from '@/components/JobPostingDetails.vue'
 import { useAuthStore } from '@/stores/auth'
 
-type Node = { key:string; title:string; kind:'company'|'department'|'job'; departmentId?:number; job?:Job; children?:Node[] }
+type Node = { key:string; title:string; kind:'folder'|'job'; parent:string; departmentId?:number; job?:Job; folder?:CatalogFolder }
+const catalog = ref<FtpCatalog>({enabled:false,synced_at:null,folders:[]})
+const location = ref('')
+const creating = ref<'folder'|'job'>()
+const newName = ref('')
+const newDepartment = ref<number>()
+const createError = ref('')
+const creatingBusy = ref(false)
+const syncing = ref(false)
+let syncTimer: ReturnType<typeof setTimeout> | undefined
+let refreshTimer: ReturnType<typeof setInterval> | undefined
+let mounted = true
+onBeforeUnmount(()=>{ mounted=false; clearTimeout(syncTimer); clearInterval(refreshTimer) })
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -28,21 +40,11 @@ const editorError = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const drawer = ref(false)
-const drawerMode = ref<'view'|'edit'|'create'>('create')
+const drawerMode = ref<'view'|'edit'>('view')
 const active = ref<Job>()
 const roundName = ref('')
 const experienceOptions=['在校生','应届生','1年以内','1–3年','3–5年','5–10年','10年以上','不限']
 const types:Record<string,string> = {social:'社会招聘',campus:'校园招聘',internship:'实习招聘',internal:'内部招聘'}
-const importing = ref(false)
-const selectedFile = ref<File>()
-const jobFile = ref<HTMLInputElement>()
-const importBusy = ref(false)
-const importError = ref('')
-const imported = ref(false)
-const importWarnings = ref<string[]>([])
-let importSequence = 0
-let importTimer: ReturnType<typeof setTimeout> | undefined
-
 const columns = ref([
   { id:'category', label:'岗位分类', min:120, visible:true },
   { id:'department', label:'所属部门', min:100, visible:true },
@@ -81,30 +83,66 @@ const filtered = computed(()=>directory.value.items.filter(job=>{
     && (!route.query.department || String(job.department_id)===route.query.department)
     && (!route.query.job || String(job.id)===route.query.job)
 }))
-watch([search,status,kind,category,processType,pageSize,()=>route.query],()=>{page.value=1})
-watch(()=>filtered.value.length,total=>{page.value=Math.min(page.value,Math.max(1,Math.ceil(total/pageSize.value)))})
-const board = computed<Node[]>(()=>{
-  const rows=filtered.value.slice((page.value-1)*pageSize.value,page.value*pageSize.value)
-  const toNode=(job:Job):Node=>({key:'job-'+job.id,title:job.title,kind:'job',job})
-  if(!auth.isSuperAdmin) return rows.map(toNode)
-  const companies=new Map<number,Node>()
-  const departments=new Map<number,Node>()
-  for(const job of rows) {
-    let company=companies.get(job.company_id)
-    if(!company) {
-      company={key:'company-'+job.company_id,title:job.company_name,kind:'company',children:[]}
-      companies.set(job.company_id,company)
+const filteredMode = computed(()=>[search.value,status.value,kind.value,category.value,processType.value,
+  route.query.department,route.query.job].some(Boolean))
+const nodes = computed(()=>{
+  const jobs = new Map(directory.value.items.map(job=>[job.id,job]))
+  const placed = new Set<number>()
+  const rows = new Map<string,Node>()
+  for (const folder of catalog.value.folders) {
+    const parentPath = folder.path.slice(0,Math.max(0,folder.path.lastIndexOf('/')))
+    const parent = parentPath ? 'ftp:'+parentPath : ''
+    const title = folder.path.split('/').at(-1) ?? folder.path
+    if (folder.job_id) {
+      const job = jobs.get(folder.job_id)
+      if (!job) continue
+      rows.set('job:'+job.id,{key:'job:'+job.id,title:job.title,kind:'job',parent,job,folder})
+      placed.add(job.id)
+    } else {
+      const key='ftp:'+folder.path
+      rows.set(key,{key,title,kind:'folder',parent,folder,departmentId:folder.department_id ?? undefined})
     }
-    let department=departments.get(job.department_id)
-    if(!department) {
-      department={key:'department-'+job.department_id,title:job.department_name,kind:'department',departmentId:job.department_id,children:[]}
-      departments.set(job.department_id,department)
-      company.children?.push(department)
-    }
-    department.children?.push(toNode(job))
   }
-  return [...companies.values()]
+  const legacyRoot = catalog.value.enabled ? 'legacy' : ''
+  for (const job of directory.value.items) {
+    if (placed.has(job.id)) continue
+    if (legacyRoot && !rows.has(legacyRoot)) rows.set(legacyRoot,{key:legacyRoot,title:'系统岗位',kind:'folder',parent:''})
+    const company='company:'+job.company_id
+    const dept='department:'+job.department_id
+    if (!rows.has(company)) rows.set(company,{key:company,title:job.company_name,kind:'folder',parent:legacyRoot})
+    if (!rows.has(dept)) rows.set(dept,{key:dept,title:job.department_name,kind:'folder',parent:company,departmentId:job.department_id})
+    rows.set('job:'+job.id,{key:'job:'+job.id,title:job.title,kind:'job',parent:dept,job})
+  }
+  return rows
 })
+const current = computed(()=>nodes.value.get(location.value))
+const breadcrumbs = computed(()=>{
+  const trail:Node[] = []
+  let node=current.value
+  while (node) {
+    trail.unshift(node)
+    node=nodes.value.get(node.parent)
+  }
+  return trail
+})
+const canCreate = computed(()=>catalog.value.enabled && !filteredMode.value &&
+  (location.value ? current.value?.folder?.writable : auth.isSuperAdmin))
+const visibleRows = computed(()=>{
+  const allowed=new Set(filtered.value.map(job=>job.id))
+  return [...nodes.value.values()].filter(node=>filteredMode.value
+    ? node.job && allowed.has(node.job.id) : node.parent===location.value)
+})
+const visibleJobs = computed(()=>visibleRows.value.filter(row=>row.job))
+const board = computed(()=>[
+  ...visibleRows.value.filter(row=>!row.job).sort((a,b)=>a.title.localeCompare(b.title,'zh-CN')),
+  ...visibleJobs.value.slice((page.value-1)*pageSize.value,page.value*pageSize.value),
+])
+watch([search,status,kind,category,processType,pageSize,location,()=>route.query],()=>{page.value=1})
+watch(()=>visibleJobs.value.length,total=>{page.value=Math.min(page.value,Math.max(1,Math.ceil(total/pageSize.value)))})
+function openFolder(key:string) {
+  location.value=key
+  search.value=status.value=kind.value=category.value=processType.value=''
+}
 const counts = computed(()=>[
   { title:'全部岗位', value:directory.value.items.length, filter:'' },
   { title:'进行中', value:directory.value.items.filter(job=>job.status==='open').length, filter:'open' },
@@ -126,47 +164,48 @@ function recruiterOptions(departmentId:number|undefined):Recruiter[] {
 const recruiters=computed(()=>recruiterOptions(form.department_id))
 const externalRecruiter=computed(()=>drawerMode.value==='edit' && active.value?.recruiter_user_id
   && !recruiters.value.some(item=>item.id===active.value?.recruiter_user_id) ? active.value : undefined)
-watch(()=>form.department_id, ()=>{
-  if(drawerMode.value==='create' && form.recruiter_user_id!=null &&
-      !recruiters.value.some(item=>item.id===form.recruiter_user_id)) form.recruiter_user_id=null
-})
-const incomplete = computed(()=>[
-  !form.title.trim() && '岗位名称', !form.department_id && '所属部门',
-  !form.recruitment_type && '岗位属性', !form.planned_headcount && '计划招聘人数',
-  form.recruiter_user_id==null && '负责人', !form.target_date && '目标日期',
-  !form.jd.trim() && '岗位职责', !form.requirements.trim() && '任职要求',
-  !form.required_skills.length && '必备技能', !form.experience_tags.length && '经验要求',
-  (!form.recruitment_start || !form.recruitment_end) && '招聘期限', !form.rounds.length && '面试轮次',
-].filter(Boolean))
 async function load() {
   loading.value=true
-  try { directory.value=await jobDirectory();loadError.value='' }
+  try {
+    const previous = breadcrumbs.value.map(node=>node.key).reverse()
+    const [jobs, folders] = await Promise.all([jobDirectory(),fetchCatalog()])
+    directory.value=jobs
+    catalog.value=folders
+    if (location.value && !current.value) location.value=previous.find(key=>nodes.value.has(key)) ?? ''
+    loadError.value=''
+  }
   catch(error){loadError.value=(error as Error).message}
   finally{loading.value=false}
 }
-onMounted(load)
-function openJob(mode:typeof drawerMode.value,job?:Job,copy=false) {
+onMounted(()=>{
+  void load()
+  refreshTimer=setInterval(async()=>{
+    if (document.hidden || !catalog.value.enabled || loading.value || syncing.value) return
+    try {
+      const latest=await fetchCatalog()
+      if (mounted && latest.synced_at!==catalog.value.synced_at) await load()
+    } catch {
+      // 页面操作和手动同步会显示请求错误。
+    }
+  },30000)
+})
+function openJob(mode:typeof drawerMode.value,job:Job) {
   drawerMode.value=mode
   active.value=job
   editorError.value=''
-  imported.value=false
-  importWarnings.value=[]
   roundName.value=''
-  const department=directory.value.departments.find(item=>item.id===job?.department_id) ?? directory.value.departments[0]
   Object.assign(form,{
-    title:copy ? (job?.title+'（副本）').slice(0,120) : job?.title || '',
-    jd:job?.jd || '', status:copy ? 'paused' : job?.status || 'paused',
-    department_id:job?.department_id || department?.id,
-    recruitment_type:job?.recruitment_type || 'social',
-    recruiter_user_id:job?.recruiter_user_id ?? (department?.managers.length===1 ? department.managers[0].id : null),
-    target_date:job?.target_date || '', requirements:job?.requirements || '',
-    required_skills:[...(job?.required_skills ?? [])],experience_tags:[...(job?.experience_tags ?? [])],
-    recruitment_start:job?.recruitment_start || '',recruitment_end:job?.recruitment_end || '', planned_headcount:job?.planned_headcount ?? null,
-    rounds:job?.rounds.map(r=>copy?{name:r.name}:{id:r.id,name:r.name}) ?? [],
+    title:job.title,jd:job.jd || '',status:job.status,department_id:job.department_id,
+    recruitment_type:job.recruitment_type || 'social',recruiter_user_id:job.recruiter_user_id ?? null,
+    target_date:job.target_date || '',requirements:job.requirements || '',
+    required_skills:[...job.required_skills],experience_tags:[...job.experience_tags],
+    recruitment_start:job.recruitment_start || '',recruitment_end:job.recruitment_end || '',
+    planned_headcount:job.planned_headcount ?? null,rounds:job.rounds.map(r=>({id:r.id,name:r.name})),
   })
   drawer.value=true
 }
 async function saveJob() {
+  if(!active.value) return
   if(!form.department_id || !form.title.trim()) {editorError.value='请填写岗位名称并选择所属部门。';return}
   if(!form.recruitment_type) {editorError.value='请选择岗位属性。';return}
   if(form.recruitment_start && form.recruitment_end && form.recruitment_start>form.recruitment_end) {editorError.value='招聘截止日期不能早于开始日期。';return}
@@ -175,83 +214,68 @@ async function saveJob() {
   try {
     const payload={...form,target_date:form.target_date || null,recruitment_start:form.recruitment_start || null,
       recruitment_end:form.recruitment_end || null,planned_headcount:form.planned_headcount || null}
-    if(drawerMode.value==='edit' && active.value) await api.put('/hr/jobs/'+active.value.id,payload)
-    else await api.post('/hr/jobs',payload)
+    await api.put('/hr/jobs/'+active.value.id,payload)
     drawer.value=false
     ElMessage.success('岗位已保存')
     await load()
   } catch(error){editorError.value=(error as Error).message}
   finally{saving.value=false}
 }
-function clearImport() {
-  ++importSequence
-  clearTimeout(importTimer)
-  selectedFile.value=undefined
-  importBusy.value=false
-  importError.value=''
+function openCreate(kind:'folder'|'job') {
+  newName.value=''
+  newDepartment.value=current.value?.departmentId
+  createError.value=''
+  creating.value=kind
 }
-watch(importing,value=>{if(!value) clearImport()})
-onBeforeUnmount(clearImport)
-function selectJobFile(files:File[]) {
-  if(!files.length || importBusy.value) return
-  importError.value=''
-  selectedFile.value=undefined
-  if(files.length!==1) {importError.value='每次只能导入一份岗位文件。';return}
-  const file=files[0]
-  if(!/\.(pdf|docx?|png|jpe?g|webp|txt)$/i.test(file.name) || !file.size || file.size>5*1024*1024){
-    importError.value='请选择支持的格式，文件不能为空或超过 5 MB。';return
+async function saveFolder() {
+  const isJob=creating.value==='job'
+  if (!newName.value.trim() || (isJob && !newDepartment.value)) {
+    createError.value=isJob ? '请填写岗位名称并选择部门。' : '请填写文件夹名称。'
+    return
   }
-  selectedFile.value=file
-}
-function fileChanged(input:HTMLInputElement) {
-  selectJobFile(Array.from(input.files ?? []))
-  input.value=''
-}
-async function uploadJob() {
-  if(!selectedFile.value || importBusy.value) return
-  const attempt=++importSequence
-  const began=Date.now()
-  const path='/workspace/job-imports'
-  const data=new FormData()
-  data.append('file',selectedFile.value)
-  importBusy.value=true
-  importError.value=''
-  const fail=(error:unknown)=>{
-    if(attempt!==importSequence) return
-    importError.value=(error as Error).message
-    importBusy.value=false
-  }
-  async function check(id:string) {
-    if(attempt!==importSequence) return
-    try {
-      const result=await api.get<JobImportStatus>(path+'/'+id)
-      if(attempt!==importSequence) return
-      if(result.status==='failed') throw new Error(result.error)
-      if(result.status==='pending') {
-        if(Date.now()-began>225000) throw new Error('尚未收到解析结果，请稍后重试或手动新建。')
-        importTimer=setTimeout(()=>void check(id),1500)
-        return
-      }
-      const {draft}=result
-      const named=draft.department_name
-      const department = directory.value.departments.find(row=>row.name===named || row.company_name+' / '+row.name===named)
-      importing.value=false
-      openJob('create')
-      imported.value=true
-      importWarnings.value=[...draft.warnings,...(named && !department?['未在可管理的部门中找到「'+named+'」，请选择归属部门。']:[])]
-      Object.assign(form,{
-        title:draft.title,department_id:department?.id,jd:draft.jd,recruitment_type:draft.recruitment_type || '',
-        recruiter_user_id:recruiterOptions(department?.id).find(manager=>manager.display_name===draft.recruiter_name)?.id ?? null,planned_headcount:draft.planned_headcount,
-        target_date:draft.target_date || '',requirements:draft.requirements || '',
-        required_skills:draft.required_skills || [],experience_tags:draft.experience_tags || [],
-        recruitment_start:draft.recruitment_start || '',recruitment_end:draft.recruitment_end || '',rounds:draft.rounds.map(name=>({name})),
-      })
-    } catch(error){fail(error)}
-  }
+  creatingBusy.value=true
+  createError.value=''
   try {
-    const start=await api.upload<{id:string}>(path,data)
-    if(attempt===importSequence) await check(start.id)
-  } catch(error){fail(error)}
+    const created=await createCatalogFolder(current.value?.folder?.path ?? '',newName.value.trim(),
+      isJob ? newDepartment.value ?? null : null)
+    creating.value=undefined
+    await load()
+    ElMessage.success(isJob ? '岗位已创建' : '文件夹已创建')
+    const job=directory.value.items.find(row=>row.id===created.job_id)
+    if (job) openJob('edit',job)
+  } catch (error) { createError.value=(error as Error).message }
+  finally { creatingBusy.value=false }
+}
+async function synchronize() {
+  syncing.value=true
+  try {
+    const {id}=await startCatalogSync()
+    const cutoff=Date.now()+20*60*1000
+    const poll=async()=>{
+      if (!mounted) return
+      try {
+        const state=await fetchSync(id)
+        if (!mounted) return
+        if (state.status==='pending' || state.status==='running') {
+          if (Date.now()>cutoff) throw new Error('同步仍在后台处理，请稍后查看目录。')
+          syncTimer=setTimeout(()=>void poll(),1500)
+          return
+        }
+        if (state.status==='failed') throw new Error(state.message)
+        if (state.status==='complete') {
+          await load()
+          const result=`目录变更 ${state.folders} 项，简历新增 ${state.added}、更新 ${state.updated}、删除 ${state.deleted}。`
+          if (state.skipped || state.message) ElMessage.warning(result+(state.message ?? `跳过 ${state.skipped} 份无效文件。`))
+          else ElMessage.success(result)
+        } else ElMessage.info('目录正在同步，请稍后刷新。')
+      } catch (error) { ElMessage.error((error as Error).message) }
+      syncing.value=false
+    }
+    await poll()
+  } catch (error) {
+    syncing.value=false
+    ElMessage.error((error as Error).message)
+  }
 }
 function addRound() {
   const name=roundName.value.trim()
@@ -263,7 +287,6 @@ function addRound() {
 async function command(action:string,job:Job) {
   if(action==='view') {openJob('view',job);return}
   if(action==='edit') {openJob('edit',job);return}
-  if(action==='copy') {openJob('create',job,true);return}
   try {
     await api.put('/hr/jobs/'+job.id,{title:job.title,department_id:job.department_id,jd:job.jd || '',status:action})
     ElMessage.success('招聘状态已更新')
@@ -281,8 +304,8 @@ function dateText(value:string) {
     <header class="hire-heading">
       <div><h1>岗位管理</h1><p>管理招聘岗位、所属组织与招聘计划</p></div>
       <div class="hire-toolbar">
-        <ElButton :icon="CloudUploadOutline" @click="importing=true">导入岗位</ElButton>
-        <ElButton type="primary" :icon="AddOutline" @click="openJob('create')">新建岗位</ElButton>
+        <ElButton v-if="auth.isSuperAdmin" type="primary" :icon="SyncOutline" :loading="syncing"
+          :disabled="!catalog.enabled" @click="synchronize">同步数据</ElButton>
       </div>
     </header>
 
@@ -295,6 +318,24 @@ function dateText(value:string) {
 
     <p v-if="loadError" class="hire-error" role="alert">{{ loadError }} <button class="hire-inline-button" @click="load">重试</button></p>
     <section class="hire-surface job-board" aria-label="招聘岗位">
+      <div class="job-location">
+        <nav aria-label="岗位目录">
+          <button type="button" class="hire-inline-button" @click="openFolder('')">岗位目录</button>
+          <template v-for="folder in breadcrumbs" :key="folder.key">
+            <span aria-hidden="true">›</span>
+            <button type="button" class="hire-inline-button" @click="openFolder(folder.key)">{{ folder.title }}</button>
+          </template>
+          <span v-if="filteredMode" class="hire-muted">搜索结果</span>
+        </nav>
+        <span v-if="catalog.synced_at" class="hire-muted job-sync-time">最近同步 {{ dateText(catalog.synced_at) }}</span>
+        <ElDropdown v-if="canCreate" trigger="click" @command="openCreate">
+          <ElButton :icon="AddOutline">新建</ElButton>
+          <template #dropdown><ElDropdownMenu>
+            <ElDropdownItem command="folder">文件夹</ElDropdownItem>
+            <ElDropdownItem v-if="location && directory.departments.length" command="job">岗位</ElDropdownItem>
+          </ElDropdownMenu></template>
+        </ElDropdown>
+      </div>
       <div class="hire-toolbar job-toolbar">
         <ElSelect v-model="processType" placeholder="招聘流程" clearable aria-label="招聘流程">
           <ElOption label="含面试流程" value="interview"/><ElOption label="不含面试流程" value="none"/>
@@ -319,14 +360,17 @@ function dateText(value:string) {
           </div>
         </ElPopover>
       </div>
-      <ElTable :data="board" row-key="key" size="default" default-expand-all
-        :row-class-name="({row}:{row:Node})=>row.kind==='job'?'job-row':'folder-row '+row.kind"
-        :empty-text="loading?'正在加载岗位…':'没有符合条件的岗位'" @row-click="(row:Node)=>row.job && router.push({name:'job-candidates',params:{jobId:row.job.id}})">
+      <ElTable :data="board" row-key="key" size="default"
+        :row-class-name="({row}:{row:Node})=>row.kind==='job'?'job-row':'folder-row'"
+        :empty-text="loading?'正在加载岗位…':filteredMode?'没有符合条件的岗位':'此文件夹为空'"
+        @row-dblclick="(row:Node)=>!row.job && openFolder(row.key)" @row-click="(row:Node)=>row.job && router.push({name:'job-candidates',params:{jobId:row.job.id}})">
         <ElTableColumn prop="title" label="岗位名称" min-width="220">
           <template #default="{row}">
             <RouterLink v-if="row.job" class="job-title hire-inline-button"
               :to="{name:'job-candidates',params:{jobId:row.job.id}}" @click.stop>{{ row.title }}</RouterLink>
-            <span v-else class="folder-title"><FolderOpenOutline/>{{ row.title }}</span>
+            <button v-else type="button" class="folder-title hire-inline-button" @click.stop="openFolder(row.key)">
+              <FolderOpenOutline/>{{ row.title }}
+            </button>
           </template>
         </ElTableColumn>
         <ElTableColumn v-for="column in columns.filter(item=>item.visible)" :key="column.id" :label="column.label" :min-width="column.min">
@@ -358,7 +402,6 @@ function dateText(value:string) {
                 <template #dropdown><ElDropdownMenu>
                   <ElDropdownItem command="view">查看岗位资料</ElDropdownItem>
                   <ElDropdownItem command="edit">编辑岗位</ElDropdownItem>
-                  <ElDropdownItem command="copy">复制岗位</ElDropdownItem>
                   <ElDropdownItem v-if="row.job.status!=='open'" command="open">开始招聘</ElDropdownItem>
                   <ElDropdownItem v-if="row.job.status==='open'" command="paused">暂停招聘</ElDropdownItem>
                   <ElDropdownItem v-if="row.job.status!=='closed'" command="closed" divided>结束招聘</ElDropdownItem>
@@ -371,14 +414,14 @@ function dateText(value:string) {
         </ElTableColumn>
       </ElTable>
       <footer class="job-footer">
-        <span class="hire-muted">共 {{ filtered.length }} 个岗位</span>
-        <ElPagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[12,24,48]"
-          :total="filtered.length" layout="sizes, prev, pager, next" :pager-count="5" background small/>
+        <span class="hire-muted">共 {{ visibleJobs.length }} 个岗位</span>
+        <ElPagination v-if="visibleJobs.length" v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[12,24,48]"
+          :total="visibleJobs.length" layout="sizes, prev, pager, next" :pager-count="5" background small/>
       </footer>
     </section>
 
     <ElDrawer v-model="drawer" class="hire-drawer job-drawer" :size="'min(580px, 100vw)'"
-      :title="drawerMode==='view'?'岗位详情':drawerMode==='edit'?'编辑岗位':'新建岗位'">
+      :title="drawerMode==='view'?'岗位详情':'编辑岗位'">
       <template v-if="drawerMode==='view' && active">
         <div class="job-detail-title"><BriefcaseOutline/><div><h2>{{ active.title }}</h2>
           <p class="hire-muted">{{ active.company_name }} / {{ active.department_name }} · {{ types[active.recruitment_type] }}</p></div></div>
@@ -402,13 +445,8 @@ function dateText(value:string) {
       </template>
       <form v-else id="job-workspace-editor" class="job-editor" @submit.prevent="saveJob">
         <p v-if="editorError" class="hire-error" role="alert">{{ editorError }}</p>
-        <ElAlert v-if="imported" class="wide" title="导入草稿 · 保存后才会新增岗位" type="info" :closable="false" show-icon>
-          <p>请与原文件核对。每个岗位只能选择一个所属部门。</p>
-          <p v-if="incomplete.length">待补充：{{ incomplete.join('、') }}</p>
-          <p v-for="warning in importWarnings" :key="warning">{{ warning }}</p>
-        </ElAlert>
         <label class="wide">岗位名称<ElInput v-model="form.title" maxlength="120" required/></label>
-        <label>所属部门<ElSelect v-model="form.department_id" :disabled="drawerMode==='edit'" aria-label="所属部门">
+        <label>所属部门<ElSelect v-model="form.department_id" disabled aria-label="所属部门">
           <ElOption v-for="department in directory.departments" :key="department.id" :value="department.id" :label="department.company_name+' / '+department.name"/>
         </ElSelect></label>
         <label>岗位属性<ElSelect v-model="form.recruitment_type" aria-label="岗位属性">
@@ -466,25 +504,24 @@ function dateText(value:string) {
       </template>
     </ElDrawer>
 
-    <ElDialog v-model="importing" width="min(640px, 95vw)" title="导入单个岗位"
-      append-to-body align-center destroy-on-close :close-on-click-modal="false">
-      <form id="job-import-form" class="job-import-form" @submit.prevent="uploadJob">
-        <p>上传一份岗位说明，在草稿中核对并补充解析字段。</p>
-        <FilePickerZone :title="selectedFile?'更换岗位文件':'选择或拖入一份岗位文件'"
-          hint="PDF、Word、图片、TXT，单份不超过 5 MB" :disabled="importBusy"
-          @browse="jobFile?.click()" @drop="selectJobFile"/>
-        <input id="job-file" ref="jobFile" type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,.txt" hidden
-          @change="fileChanged($event.target as HTMLInputElement)">
-        <div v-if="selectedFile" class="job-selected-file">
-          <strong :title="selectedFile.name">{{ selectedFile.name }}</strong>
-          <ElTag size="small" effect="light" :type="importBusy?'warning':'info'" role="status">{{ importBusy?'正在解析':'待解析' }}</ElTag>
-        </div>
-        <p v-if="importError" class="hire-error" role="alert">{{ importError }}</p>
+    <ElDialog :model-value="Boolean(creating)" width="min(480px, 95vw)"
+      :title="creating==='job'?'新建岗位':'新建文件夹'" append-to-body
+      @update:model-value="value=>{ if (!value) creating=undefined }">
+      <form id="ftp-folder-editor" class="folder-editor" @submit.prevent="saveFolder">
+        <label>{{ creating==='job'?'岗位名称':'文件夹名称' }}
+          <ElInput v-model="newName" :maxlength="creating==='job'?120:255" autofocus/>
+        </label>
+        <label v-if="creating==='job'">所属部门
+          <ElSelect v-model="newDepartment" :disabled="Boolean(current?.departmentId)" placeholder="选择已有部门">
+            <ElOption v-for="department in directory.departments" :key="department.id"
+              :value="department.id" :label="department.company_name+' / '+department.name"/>
+          </ElSelect>
+        </label>
+        <p v-if="createError" class="hire-error" role="alert">{{ createError }}</p>
       </form>
       <template #footer>
-        <ElButton @click="importing=false">关闭</ElButton>
-        <ElButton type="primary" :icon="CloudUploadOutline" native-type="submit" form="job-import-form"
-          :loading="importBusy" :disabled="!selectedFile">解析文件</ElButton>
+        <ElButton @click="creating=undefined">取消</ElButton>
+        <ElButton type="primary" native-type="submit" form="ftp-folder-editor" :loading="creatingBusy">创建</ElButton>
       </template>
     </ElDialog>
 
@@ -527,11 +564,14 @@ function dateText(value:string) {
 .job-editor :is(input[type=number],input[type=date]):focus {outline:0;border-color:var(--hire-accent);box-shadow:0 0 0 3px rgba(13,137,126,.1)}
 .round-edit {margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px}
 .round-edit button {flex:none}
-.job-import-form {display:grid;gap:10px}
-.job-selected-file {display:flex;align-items:center;justify-content:space-between;gap:10px;
-  border:1px solid var(--hire-line);border-radius:6px;padding:8px 10px}
-.job-selected-file strong {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.job-import-form p {color:var(--hire-muted)}
+.job-location {display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--hire-line)}
+.job-location nav {display:flex;align-items:center;gap:8px;flex:1;flex-wrap:wrap}
+.job-location nav span {color:var(--hire-muted)}
+.job-sync-time {font-size:12px}
+.folder-title {text-align:left;white-space:normal;overflow-wrap:anywhere}
+.folder-title svg {color:#a67322}
+.folder-editor,.folder-editor label {display:grid;gap:9px}
+.folder-editor {gap:16px}
 @media (max-width:620px) {
   .jobs-page .hire-heading {align-items:flex-start;flex-wrap:wrap}
   .job-metrics button {padding:10px 5px}.job-metrics span{font-size:12px}

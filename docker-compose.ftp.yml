@@ -1,0 +1,43 @@
+# 与 docker-compose.yml 一起使用。凭据留在服务器权限受限的 .env。
+x-ftp-env: &ftp-env
+  RESUME_FTP_HOST: ${RESUME_FTP_HOST:?Set the Windows FTP host}
+  RESUME_FTP_PORT: ${RESUME_FTP_PORT:-21}
+  RESUME_FTP_USER: ${RESUME_FTP_USER:?Set the FTP account}
+  RESUME_FTP_PASSWORD: ${RESUME_FTP_PASSWORD:?Set the FTP password}
+  RESUME_FTP_ROOT: ${RESUME_FTP_ROOT:?Set the catalog directory}
+  RESUME_FTP_TLS: ${RESUME_FTP_TLS:-true}
+  RESUME_FTP_CA_FILE: ${RESUME_FTP_CA_FILE:-}
+  RESUME_FTP_ENCODING: ${RESUME_FTP_ENCODING:-utf-8}
+  RESUME_FTP_SYNC_MINUTES: ${RESUME_FTP_SYNC_MINUTES:-30}
+
+x-task-env: &task-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-resume}:${POSTGRES_PASSWORD:-resume}@pg:5432/${POSTGRES_DB:-resume}
+  APP_DATABASE_URL: postgresql://rs_app:${RS_APP_PASSWORD:-rs_app123}@pg:5432/${POSTGRES_DB:-resume}
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  STORAGE_ROOT: /data/storage
+
+services:
+  api:
+    environment: *ftp-env
+  ftp-worker:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: api}
+    environment:
+      <<: [*task-env, *ftp-env]
+    volumes: ["${STORAGE_DIR:-./storage}:/data/storage"]
+    command: ["celery", "-A", "worker.celery_app", "worker", "-Q", "ftp_catalog", "-l", "info", "--concurrency=1"]
+    restart: unless-stopped
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  ftp-scheduler:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: api}
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      RESUME_FTP_HOST: ${RESUME_FTP_HOST:?Set the Windows FTP host}
+      RESUME_FTP_SYNC_MINUTES: ${RESUME_FTP_SYNC_MINUTES:-30}
+    command: ["celery", "-A", "worker.celery_app", "beat", "-l", "info", "--schedule=/tmp/ftp-beat"]
+    restart: unless-stopped
+    depends_on:
+      ftp-worker: {condition: service_started}

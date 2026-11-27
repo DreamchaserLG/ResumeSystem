@@ -110,8 +110,8 @@ def main(path, dry_run=False):
                 skipped.append((row.path, "根级目录不能挂岗位"))
                 continue
             owner = cn.execute(text(
-                "SELECT coalesce(department_id,(SELECT department_id FROM job WHERE id=:job)) AS dep"
-            ), {"job": job_id}).scalar_one()
+                "SELECT department_id FROM job WHERE id=:job"
+            ), {"job": job_id}).scalar_one_or_none()
             department = owner or job_department.get(job_id)
             if department is None:
                 skipped.append((row.path, "岗位无部门"))

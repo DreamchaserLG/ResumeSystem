@@ -1,4 +1,5 @@
 """Windows FTP 目录及文件读取，兼容 MLSD 和 IIS 的 DOS 目录列表。"""
+import codecs
 import re
 import ssl
 from contextlib import contextmanager, suppress
@@ -192,5 +193,11 @@ def open_source(settings=None):
         client.login(settings.resume_ftp_user, settings.resume_ftp_password.get_secret_value())
         if settings.resume_ftp_tls:
             client.prot_p()
+        if codecs.lookup(settings.resume_ftp_encoding).name == "utf-8":
+            try:
+                client.sendcmd("OPTS UTF8 ON")
+            except error_perm as error:
+                if str(error)[:3] not in {"500", "501", "502", "504"}:
+                    raise
         client.cwd(settings.resume_ftp_root or "/")
         yield FtpSource(client)

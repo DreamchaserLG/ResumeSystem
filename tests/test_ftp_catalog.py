@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.api import ftp_catalog as api
 from app.core import ftp_catalog as catalog, ftp_source as ftp
 from app.core.auth import AuthContext, require_auth
+from app.core.config import Settings
 from app.core.db import owner_engine
 from app.main import app
 
@@ -155,3 +156,36 @@ def test_catalog_api_and_incremental_database(monkeypatch, tmp_path):
             catalog.synchronize()
             assert connection.execute(text("SELECT hidden FROM job WHERE id=:id"), {"id": job}).scalar_one()
         transaction.rollback()
+
+
+def test_ftp_negotiates_utf8_before_opening_the_catalog(monkeypatch):
+    calls = []
+
+    class Client:
+        def __init__(self, encoding):
+            calls.append(("encoding", encoding))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *result):
+            return None
+
+        def connect(self, host, port, timeout):
+            calls.append(("connect", port))
+
+        def login(self, user, password):
+            calls.append(("login", user))
+
+        def sendcmd(self, command):
+            calls.append(("option", command))
+            return "200 UTF8 enabled"
+
+        def cwd(self, path):
+            calls.append(("cwd", path))
+
+    monkeypatch.setattr(ftp, "FTP", Client)
+    settings = Settings(resume_ftp_host="test.invalid", resume_ftp_user="fixture",
+                        resume_ftp_password="fixture", resume_ftp_tls=False, resume_ftp_root="/岗位目录")
+    with ftp.open_source(settings):
+        assert calls[-2:] == [("option", "OPTS UTF8 ON"), ("cwd", "/岗位目录")]

@@ -563,7 +563,7 @@ function exportReport() {
               <li v-for="item in degreeRows" :key="item.code">
                 <span>{{ item.label }}</span>
                 <div class="stage-track" aria-hidden="true"><i :style="{width:item.width,background:'#3f7f8f'}"></i></div>
-                <strong>{{ number(item.count) }}</strong>
+                <strong>{{ number(item.people) }}</strong>
               </li>
             </ul>
             <p v-else class="hire-empty">当前筛选暂无学历数据。</p>
@@ -587,7 +587,7 @@ function exportReport() {
               <li v-for="item in regionRows" :key="item.code">
                 <span>{{ item.label }}</span>
                 <div class="stage-track" aria-hidden="true"><i :style="{width:item.width,background:'#7a6f4f'}"></i></div>
-                <strong>{{ number(item.count) }}</strong>
+                <strong>{{ number(item.people) }}</strong>
               </li>
             </ul>
             <p v-else class="hire-empty">当前筛选暂无地区数据。</p>

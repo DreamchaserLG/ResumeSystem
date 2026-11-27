@@ -4,12 +4,41 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
-from app.core.auth import AuthContext, require_auth
+from app.core.auth import AuthContext, require_auth, require_recruitment_access
 from app.core.db import rls_session
+from app.core.recruitment_board import recruitment_board, recruitment_board_updates
+from app.core.talent_status import Status
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
+
+
+@router.get("/board")
+def board(
+    period: Literal["week","month","year"] = "month",
+    anchor: date | None = None,
+    department_id: int | None = Query(default=None, gt=0),
+    job_id: int | None = Query(default=None, gt=0),
+    status: Status | Literal["unassigned"] | None = None,
+    job_status: Literal["open", "paused", "closed"] | None = None,
+    auth: AuthContext = Depends(require_recruitment_access),
+):
+    if auth.role != "super_admin":
+        raise HTTPException(403, "招聘看板仅限超级管理员查看")
+    with rls_session(departments=auth.departments, user_id=auth.user_id, repeatable_read=True) as session:
+        return recruitment_board(session, period, anchor, department_id, job_id, status, job_status)
+
+
+@router.get("/board/updates")
+async def board_updates(auth: AuthContext = Depends(require_recruitment_access)):
+    if auth.role != "super_admin":
+        raise HTTPException(403, "招聘看板仅限超级管理员查看")
+    return StreamingResponse(
+        recruitment_board_updates(auth.user_id), media_type="text/event-stream",
+        headers={"Cache-Control":"no-store","X-Accel-Buffering":"no"},
+    )
 
 
 @router.get("")

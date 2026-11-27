@@ -18,6 +18,8 @@ const router = createRouter({
           meta: { title:'简历管理' } },
         { path: 'talent', name: 'talent', component: () => import('@/views/TalentPoolView.vue'),
           meta: { title:'人才管理' } },
+        { path:'recruitment-board', name:'recruitment-board', component:() => import('@/views/RecruitmentDashboardView.vue'),
+          meta:{ title:'招聘看板', role:'super_admin' } },
         { path: 'analysis', name: 'analysis', redirect: { name:'jobs' } },
         { path: 'applications/:id', name: 'application-detail', redirect: to => ({
           name:'applications', query:{ ...to.query, candidate:String(to.params.id) },

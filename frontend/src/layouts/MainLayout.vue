@@ -12,6 +12,7 @@ import {
   DocumentsOutline,
   PeopleOutline,
   GitNetworkOutline,
+  GridOutline,
 } from '@vicons/ionicons5'
 import ProfileMenu from '@/components/ProfileMenu.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -54,6 +55,7 @@ const menuItems = computed(()=>[
   { label: '岗位管理', key: 'jobs', icon: BriefcaseOutline },
   { label: '简历管理', key: 'applications', icon: DocumentsOutline },
   { label: '人才管理', key: 'talent', icon: GitNetworkOutline },
+  ...(auth.isSuperAdmin ? [{label:'招聘看板',key:'recruitment-board',icon:GridOutline}] : []),
 ])
 const activeMenu = computed(() => route.name === 'job-candidates' ? 'jobs' : route.name === 'application-detail' ? 'applications' : route.name)
 /* 收起状态点侧边栏任意位置都展开，接近 GPT 的操作手感。 */

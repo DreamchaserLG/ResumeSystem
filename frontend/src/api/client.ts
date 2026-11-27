@@ -51,7 +51,7 @@ export const api = {
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   },
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, signal?: AbortSignal) => request<T>(path, {signal}),
   verifySession: <T>() => request<T>('/auth/me', {signal:AbortSignal.timeout(8000)}, false),
   post: <T>(path: string, data?: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'POST', body: data ? JSON.stringify(data) : undefined, signal }),

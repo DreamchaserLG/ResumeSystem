@@ -30,6 +30,7 @@ def rls_session(
     client_id: int | None = None,
     application_ids: list[int] | None = None,
     user_id: int | None = None,
+    repeatable_read: bool = False,
 ) -> Iterator[Session]:
     """开启一个带 RLS 上下文的事务会话。
 
@@ -38,6 +39,8 @@ def rls_session(
     s = SessionLocal()
     try:
         trans = s.begin()
+        if repeatable_read:
+            s.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         set_map: dict[str, str] = {}
         if departments:
             set_map["app.departments"] = ",".join(str(d) for d in departments)

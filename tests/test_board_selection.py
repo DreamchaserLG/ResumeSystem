@@ -88,3 +88,13 @@ def test_board_selection_period_status_and_scope(monkeypatch):
             actor[0] = AuthContext(2, "", "", "dept_hr", 1, [1])
             assert client.get(path).status_code == 403
         db.rollback()
+
+
+def test_board_reads_the_live_database_session(monkeypatch):
+    admin = AuthContext(1, "", "", "super_admin", 1, [1, 2])
+    monkeypatch.setitem(app.dependency_overrides, require_recruitment_access, lambda: admin)
+    with TestClient(app) as client:
+        response = client.get("/api/v1/statistics/board", params={"period": "month"})
+    assert response.status_code == 200, response.text
+    assert response.json()["period"]["kind"] == "month"
+    assert "selection" in response.json()
